@@ -9,37 +9,102 @@ composer and clicks the send button for you.
 2. Turn on **Developer mode** (top right).
 3. Click **Load unpacked** and select this folder.
 
+## Where the UI lives
+
+The toolbar icon opens a **side panel** docked to the right of the browser
+window (`chrome.sidePanel`, Chrome 114+). Unlike the old toolbar popup it stays
+open while you browse, so the tracker's **Job title**, **Company** and **Job
+link** follow you from listing to listing - fields you have typed in yourself
+are never overwritten, only untouched ones move.
+
+Chrome opens the panel on the right by default; the user can move it left from
+the panel's own menu, and an extension cannot override that.
+
+**Pop out** in the panel header reopens the same page as a free-standing window
+pinned to the right edge of the screen - useful next to a ChatGPT window or on a
+second monitor. Chrome cannot keep it above other windows. There is one such
+window at a time; pressing **Pop out** again just focuses it.
+
+`popup.html` serves both views. The window is the one loaded with
+`?view=window`, which is how it knows to hide its own **Pop out** button.
+
+On Chrome older than 114 there is no side panel, so the toolbar icon opens the
+popped-out window instead (`background.js`).
+
+Because the panel is not a popup, it no longer closes itself after a send - the
+status line reports the result and the panel stays put.
+
 ## Use
 
-### Resume mode (on by default)
+### Sending a job description
 
-1. Pick a **Resume template** - Jared Christopher Burgwin, Nathaniel Adam Lesch,
-   or Russell Aaron Turner.
-2. Optionally reword the **Start prompt** - the opening line the job description
-   is appended to. It is remembered between sends; **Reset** restores the
-   default, and leaving it empty falls back to the default too.
-3. Paste the **job description** into the box.
-4. **Send** (or `Ctrl`+`Enter`).
+Every send is a resume send: the template DOCX and the generator prompt are
+always uploaded, and there is no plain-prompt mode. A job description sent on
+its own comes back as a resume for whoever ChatGPT happens to remember, so the
+files are not optional.
+
+1. Pick a **Resume template** - the entries in `RESUME_TEMPLATES` (`assets.js`).
+2. Paste the **job description** into the box.
+3. **Send to ChatGPT** (or `Ctrl`+`Enter`).
 
 The extension attaches the chosen `Temp/…docx` first, then
 `Resume Generator Prompt.txt`, and sends:
 
 > Give me tailored resume based on attached file and JD : *…your pasted JD…*
 
-followed by a fixed paragraph pinning the identity to the attached DOCX. Only
-the opening line is editable; the default lives in `DEFAULT_START_PROMPT` in
-`assets.js` and the rest of the wrapper in `buildResumePrompt()` beside it.
+The opening line is fixed: it lives in `START_PROMPT` in `assets.js`, and the
+wrapper that joins it to the JD is `buildResumePrompt()` beside it.
 
 **Context menu** - select a job description on any page, right-click, choose
 **Send "…" to ChatGPT as a JD**. It runs the same pipeline with whichever
-template and start prompt you last used in the popup.
+template you last used in the panel.
 
-### Plain mode
+### Job tracker
 
-Untick **Resume mode** and the popup becomes a plain prompt box: no template,
-no wrapper text, your text sent verbatim.
+Below the send button, the **Job tracker** half of the panel files the same
+application into the `server/` API of this repo. It is always on screen; if the
+tracker is not running, the section says so and offers a **Retry**.
 
-### In either mode
+The two actions are separate buttons and neither waits on the other:
+
+| Button | Does |
+| --- | --- |
+| **Send to ChatGPT** | Only sends the prompt. Needs nothing from the tracker form. |
+| **Save to tracker** | Only files the record. Does not touch ChatGPT. |
+
+Either order works - send first and file the job once ChatGPT is writing, or
+file it first and send afterwards. Because **Save to tracker** reads the job
+description out of the prompt box, **Send to ChatGPT** leaves that box alone
+while the tracker section is open; with the section closed it clears it as
+before.
+
+- **Profile** and **Status** are fetched from `GET /api/meta`. A profile *is* a
+  resume template - `PROFILES` in `server/src/config.js` holds the same names as
+  `RESUME_TEMPLATES` here - so the two dropdowns move together: picking a
+  template selects that profile and vice versa. The server still rejects any
+  `profileName` outside its own list, so **renaming a person means editing both
+  lists**, and renaming the records already filed under the old name.
+- **Job title**, **Company** and **Job link** are guessed from the tab you have
+  open (`"<role> at <company> | <board>"` titles parse best) and are editable.
+- **Job description** is whatever is in the prompt box.
+- **Resume file** is optional, because ChatGPT will not have written it yet if
+  you file the job straight away. Leave it empty and the record is created
+  without one; the panel then shows a **Waiting on a resume** row that attaches
+  the file you downloaded, which `PUT`s it onto that record.
+
+The tracker must be running (`npm run dev:server` from the repo root) - the
+popup says so in the tracker section when it cannot reach the API. The host is
+`http://localhost:5000`, set in `TRACKER_API` (`tracker.js`) and in
+`host_permissions` (`manifest.json`); change both together.
+
+Requests carry `Origin: chrome-extension://<id>`, which the server allows via
+the `chrome-extension://*` entry in its `CORS_ORIGIN`. Swap that for your real
+extension id (shown on `chrome://extensions`) to allow only this extension.
+
+The context menu stays send-only: a right-click has no job title or profile to
+file the application under.
+
+### How the prompt lands
 
 The prompt goes into the ChatGPT tab you already have open, in whatever chat is
 on screen - the tab is focused but never navigated, so nothing on the page is
@@ -48,7 +113,7 @@ thrown away. Only when no ChatGPT tab exists at all is one opened, on
 and fires once that page finishes loading.
 
 The send button is then clicked for you, unless an attachment upload has not
-settled - in that case the prompt is left in the composer and the popup says so.
+settled - in that case the prompt is left in the composer and the panel says so.
 
 Because the chat is reused, start a new one yourself when the conversation
 already holds a different candidate - see the troubleshooting note below.
@@ -61,7 +126,8 @@ already holds a different candidate - see the troubleshooting note below.
 | `assets.js` | Template list, prompt wrapper, and bundled-file loading. Shared by the popup and the service worker. |
 | `background.js` | Service worker: context menu, tab lookup/creation, message routing. |
 | `content.js` | Runs on chatgpt.com: fills the composer, clicks send. |
-| `popup.html/.css/.js` | The toolbar popup UI. |
+| `tracker.js` | Job tracker API client: `/api/meta`, create, and attach-resume. |
+| `popup.html/.css/.js` | The panel UI, in both the docked and popped-out views. |
 | `Temp/*.docx` | Resume templates, bundled with the extension. |
 | `Resume Generator Prompt.txt` | Instruction file attached with every resume prompt. |
 
@@ -140,8 +206,12 @@ selector-agnostic.
 
 ## Notes
 
-- Only `chatgpt.com` and `chat.openai.com` are in `host_permissions`; the
-  context menu works on any page but only reads the text you selected.
+- Only `chatgpt.com`, `chat.openai.com` and the tracker's `localhost:5000` are
+  in `host_permissions`; the context menu works on any page but only reads the
+  text you selected.
+- The `action` deliberately declares no `default_popup`. A popup would take
+  precedence over `openPanelOnActionClick`, and the side panel would never
+  open from the toolbar icon.
 - No icons are declared, so Chrome shows the default puzzle-piece. Add
   `"icons"` and `"action.default_icon"` entries to `manifest.json` if you want
   your own.

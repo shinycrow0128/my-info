@@ -10,6 +10,28 @@
 // Classic (non-module) service worker, so the shared resume helpers load here.
 importScripts("assets.js");
 
+/**
+ * The toolbar icon opens the side panel, which docks to the right of the
+ * browser window and stays open while you browse. This only works because the
+ * action declares no `default_popup` - one would win over the panel.
+ */
+if (chrome.sidePanel) {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error) => console.warn("[ChatGPT Auto Prompt]", error));
+} else {
+  // Chrome older than 114 has no side panel; the popped-out window stands in.
+  // No `screen` in a service worker, so Chrome places this one itself.
+  chrome.action.onClicked.addListener(() => {
+    chrome.windows.create({
+      url: chrome.runtime.getURL("popup.html?view=window"),
+      type: "popup",
+      width: 420,
+      height: 900,
+    });
+  });
+}
+
 // Only used when no ChatGPT tab is open at all.
 const CHATGPT_URL = "https://chatgpt.com/";
 const CHATGPT_TAB_MATCH = ["https://chatgpt.com/*", "https://chat.openai.com/*"];
@@ -31,29 +53,13 @@ chrome.contextMenus.onClicked.addListener((info) => {
 });
 
 /**
- * Selected text goes through the same resume pipeline as the popup, using the
+ * Selected text goes through the same resume pipeline as the panel, using the
  * template last chosen there - so a JD can be sent straight off a job listing.
  */
 async function sendSelection(selectionText) {
-  const { resumeMode, attachFiles, templateId, startPrompt } =
-    await chrome.storage.local.get([
-      "resumeMode",
-      "attachFiles",
-      "templateId",
-      "startPrompt",
-    ]);
-
-  if (resumeMode === false) {
-    return deliverPrompt(selectionText, []);
-  }
-
-  // "Attach resume files" in the popup; on unless it was turned off there.
-  const files =
-    attachFiles === false ? [] : await buildResumeAttachments(templateId);
-  return deliverPrompt(
-    buildResumePrompt(selectionText, startPrompt),
-    files
-  );
+  const { templateId } = await chrome.storage.local.get(["templateId"]);
+  const files = await buildResumeAttachments(templateId);
+  return deliverPrompt(buildResumePrompt(selectionText), files);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -6,48 +6,96 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <label class="checkbox strong">
-      <input type="checkbox" id="resume-mode" checked />
-      Resume mode
-    </label>
+    <header class="top">
+      <span class="top-title">ChatGPT Auto Prompt</span>
+      <button
+        id="popout"
+        type="button"
+        class="link"
+        title="Reopen this panel as a window pinned to the right of the screen"
+      >
+        Pop out
+      </button>
+    </header>
 
-    <div id="resume-fields">
-      <label class="label" for="template">Resume template</label>
-      <select id="template"></select>
-
-      <div class="label-row">
-        <label class="label" for="start-prompt">Start prompt</label>
-        <button id="reset-start-prompt" type="button" class="link">Reset</button>
+    <!-- Shown only when the last tracked application still has no resume on file. -->
+    <div id="pending" class="pending" hidden>
+      <p class="pending-text">
+        Waiting on a resume: <b id="pending-title"></b>
+      </p>
+      <input type="file" id="pending-file" accept=".docx,.doc,.pdf" />
+      <div class="pending-actions">
+        <button id="pending-attach" type="button" class="link">Attach</button>
+        <button id="pending-dismiss" type="button" class="link">Dismiss</button>
       </div>
-      <textarea
-        id="start-prompt"
-        class="short"
-        rows="2"
-        spellcheck="false"
-      ></textarea>
-
-      <label class="checkbox">
-        <input type="checkbox" id="attach-files" checked />
-        Attach resume files
-      </label>
     </div>
 
-    <label class="label" for="prompt" id="prompt-label">Job description</label>
+    <label class="label" for="template">Resume template</label>
+    <select id="template"></select>
+
+    <label class="label" for="prompt">Job description</label>
     <textarea
       id="prompt"
       placeholder="Paste the job description here…"
       autofocus
     ></textarea>
 
-    <p id="auto-files" class="auto-files"></p>
-
     <div class="row">
-      <button id="send" type="button">Send</button>
+      <button id="send" type="button">Send to ChatGPT</button>
+    </div>
+
+    <h2 class="section">Job tracker</h2>
+
+    <div id="track-fields">
+      <p id="track-error" class="track-error" hidden></p>
+      <div id="track-retry" class="track-retry" hidden>
+        <button id="retry-meta" type="button" class="link">Retry</button>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <label class="label" for="profile-name">Profile *</label>
+          <select id="profile-name"></select>
+        </div>
+        <div>
+          <label class="label" for="track-status">Status</label>
+          <select id="track-status"></select>
+        </div>
+      </div>
+
+      <label class="label" for="job-title">Job title *</label>
+      <input id="job-title" type="text" placeholder="Senior React Developer" />
+
+      <div class="grid-2">
+        <div>
+          <label class="label" for="company">Company</label>
+          <input id="company" type="text" placeholder="Acme Inc." />
+        </div>
+        <div>
+          <label class="label" for="applied-at">Applied on</label>
+          <input id="applied-at" type="date" />
+        </div>
+      </div>
+
+      <label class="label" for="job-link">Job link</label>
+      <input id="job-link" type="url" placeholder="https://…" />
+
+      <label class="label" for="resume-file">Resume file</label>
+      <input id="resume-file" type="file" accept=".docx,.doc,.pdf" />
+      <label class="label" for="notes">Notes</label>
+      <textarea id="notes" class="short" rows="2"></textarea>
+
+      <div class="row">
+        <button id="save-track" type="button" class="secondary">
+          Save to tracker
+        </button>
+      </div>
     </div>
 
     <p id="status" class="status" role="status"></p>
 
     <script src="assets.js"></script>
+    <script src="tracker.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

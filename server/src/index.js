@@ -3,7 +3,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import multer from 'multer';
 import mongoose from 'mongoose';
-import { config, PROFILES, STATUSES } from './config.js';
+import { config, isAllowedOrigin, PROFILES, STATUSES } from './config.js';
 import { connectDb } from './db.js';
 import { router as applicationsRouter } from './routes/applications.js';
 import { router as analyticsRouter } from './routes/analytics.js';
@@ -14,9 +14,10 @@ app.use(morgan('dev'));
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Allow same-origin/tooling requests that send no Origin header.
-      if (!origin || config.corsOrigins.includes(origin)) return cb(null, true);
-      cb(new Error(`Origin ${origin} is not allowed by CORS`));
+      if (isAllowedOrigin(origin)) return cb(null, true);
+      const err = new Error(`Origin ${origin} is not allowed by CORS`);
+      err.status = 403;
+      cb(err);
     },
   }),
 );

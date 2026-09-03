@@ -13,11 +13,16 @@ job link, and which of the three profiles it went out under — all in one table
 The roster is fixed in [`server/src/config.js`](server/src/config.js):
 
 ```
-Jared Burgwin · Russell Turner · Nathaniel Lesch
+Adam Corey Everitte · Cody Tylor Wolfe · Russell Aaron Turner
 ```
 
 The frontend loads it from `GET /api/meta`, so editing that one array updates the dropdown,
 the filters, and server-side validation together.
+
+These are the same names as `RESUME_TEMPLATES` in the Chrome extension
+(`Chatgpt Extension/assets.js`) - a profile *is* a resume template. The
+extension files each application under the template it sent, so renaming a
+person means editing both lists, and renaming existing records to match.
 
 ## Setup
 
@@ -37,7 +42,7 @@ cp server/.env.example server/.env
 | --------------- | ------------------------------------------- | ------------------------------ |
 | `MONGODB_URI`   | `mongodb://127.0.0.1:27017/resume_tracker`   | Connection string              |
 | `PORT`          | `5000`                                       | API port                       |
-| `CORS_ORIGIN`   | `http://localhost:5173`                      | Allowed frontend origins (CSV) |
+| `CORS_ORIGIN`   | `http://localhost:5173,chrome-extension://*` | Allowed frontend origins (CSV). `chrome-extension://*` lets the Chrome extension file applications; replace it with the real `chrome-extension://<id>` to pin one extension |
 | `UPLOAD_DIR`    | `uploads`                                    | Where resume files land        |
 | `MAX_UPLOAD_MB` | `15`                                         | Upload size limit              |
 

@@ -3,17 +3,27 @@
   "name": "ChatGPT Auto Prompt",
   "version": "1.0.0",
   "description": "Pastes text into the ChatGPT composer and clicks the send button for you.",
-  "permissions": ["storage", "unlimitedStorage", "contextMenus", "tabs", "scripting"],
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "contextMenus",
+    "tabs",
+    "scripting",
+    "sidePanel"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
-    "https://chat.openai.com/*"
+    "https://chat.openai.com/*",
+    "http://localhost:5000/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "Send prompt to ChatGPT"
+    "default_title": "Open the ChatGPT prompt panel"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "content_scripts": [
     {
