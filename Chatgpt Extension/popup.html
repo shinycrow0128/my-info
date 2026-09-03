@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Send prompt to ChatGPT</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <label class="checkbox strong">
+      <input type="checkbox" id="resume-mode" checked />
+      Resume mode
+    </label>
+
+    <div id="resume-fields">
+      <label class="label" for="template">Resume template</label>
+      <select id="template"></select>
+
+      <div class="label-row">
+        <label class="label" for="start-prompt">Start prompt</label>
+        <button id="reset-start-prompt" type="button" class="link">Reset</button>
+      </div>
+      <textarea
+        id="start-prompt"
+        class="short"
+        rows="2"
+        spellcheck="false"
+      ></textarea>
+
+      <label class="checkbox">
+        <input type="checkbox" id="attach-files" checked />
+        Attach resume files
+      </label>
+    </div>
+
+    <label class="label" for="prompt" id="prompt-label">Job description</label>
+    <textarea
+      id="prompt"
+      placeholder="Paste the job description here…"
+      autofocus
+    ></textarea>
+
+    <p id="auto-files" class="auto-files"></p>
+
+    <div class="row">
+      <button id="send" type="button">Send</button>
+    </div>
+
+    <p id="status" class="status" role="status"></p>
+
+    <script src="assets.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
