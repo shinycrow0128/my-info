@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import FileDrop from './FileDrop.jsx';
 import { createApplication, updateApplication } from '../lib/api.js';
 
 const EMPTY = {
@@ -31,9 +32,9 @@ function todayInput() {
 export default function ApplicationForm({ profiles, statuses, editing, onClose, onSaved }) {
   const [form, setForm] = useState(EMPTY);
   const [file, setFile] = useState(null);
+  const [coverFile, setCoverFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const fileRef = useRef(null);
 
   const isEdit = Boolean(editing);
 
@@ -53,12 +54,17 @@ export default function ApplicationForm({ profiles, statuses, editing, onClose, 
       setForm({ ...EMPTY, appliedAt: todayInput() });
     }
     setFile(null);
+    setCoverFile(null);
     setError('');
-    if (fileRef.current) fileRef.current.value = '';
   }, [editing]);
 
   const existingResume = useMemo(
     () => (editing && editing.resume ? editing.resume.originalName : ''),
+    [editing],
+  );
+
+  const existingCover = useMemo(
+    () => (editing && editing.coverLetter ? editing.coverLetter.originalName : ''),
     [editing],
   );
 
@@ -72,11 +78,11 @@ export default function ApplicationForm({ profiles, statuses, editing, onClose, 
 
     if (!form.profileName) return setError('Pick a profile name.');
     if (!form.jobTitle.trim()) return setError('Job title is required.');
-    if (!isEdit && !file) return setError('Attach the resume file you sent for this job.');
 
     const data = new FormData();
     Object.entries(form).forEach(([key, value]) => data.append(key, value));
     if (file) data.append('resume', file);
+    if (coverFile) data.append('coverLetter', coverFile);
 
     setSaving(true);
     try {
@@ -175,34 +181,31 @@ export default function ApplicationForm({ profiles, statuses, editing, onClose, 
           </label>
 
           <div className="grid-2">
-            <label className="field">
-              <span>
-                Resume file {!isEdit && <em>*</em>}
-              </span>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".docx,.doc,.pdf"
-                onChange={(e) => setFile(e.target.files[0] || null)}
-              />
-              <small className="hint">
-                {file
-                  ? `New file: ${file.name}`
-                  : existingResume
-                    ? `Currently on file: ${existingResume} — pick a file to replace it.`
-                    : '.docx, .doc or .pdf'}
-              </small>
-            </label>
+            <FileDrop
+              label="Resume"
+              file={file}
+              existingName={existingResume}
+              onPick={setFile}
+              hint="Optional — the extension files this one itself."
+            />
 
-            <label className="field">
-              <span>Applied on</span>
-              <input
-                type="date"
-                value={form.appliedAt}
-                onChange={(e) => set('appliedAt', e.target.value)}
-              />
-            </label>
+            <FileDrop
+              label="Cover letter"
+              file={coverFile}
+              existingName={existingCover}
+              onPick={setCoverFile}
+              hint="Optional — the extension files this one itself."
+            />
           </div>
+
+          <label className="field half">
+            <span>Applied on</span>
+            <input
+              type="date"
+              value={form.appliedAt}
+              onChange={(e) => set('appliedAt', e.target.value)}
+            />
+          </label>
 
           <label className="field">
             <span>Notes</span>

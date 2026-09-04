@@ -7,6 +7,8 @@ job link, and which of the three profiles it went out under — all in one table
 - **Backend:** Express 5 on Node 24 (ESM)
 - **Database:** MongoDB via Mongoose
 - **Uploads:** stored on disk in `server/uploads/`, metadata in MongoDB
+- **Documents:** a resume and a cover letter per application, both filed by the
+  Chrome extension without a click - see [The automatic pipeline](#the-automatic-pipeline)
 
 ## Profiles
 
@@ -28,6 +30,17 @@ person means editing both lists, and renaming existing records to match.
 
 Requires Node 24+ and a MongoDB you can reach (a local `mongod` on the default port works).
 
+Filing a generated ZIP also needs **Python with `python-docx`** on the machine
+running the API, because that is what `resume_fill.py` uses to pour the generated
+JSON into a template:
+
+```bash
+pip install python-docx
+```
+
+Nothing else in the app depends on it - without Python you can still upload the
+two documents by hand.
+
 ```bash
 npm run setup     # installs root, server and client dependencies
 ```
@@ -45,6 +58,12 @@ cp server/.env.example server/.env
 | `CORS_ORIGIN`   | `http://localhost:5173,chrome-extension://*` | Allowed frontend origins (CSV). `chrome-extension://*` lets the Chrome extension file applications; replace it with the real `chrome-extension://<id>` to pin one extension |
 | `UPLOAD_DIR`    | `uploads`                                    | Where resume files land        |
 | `MAX_UPLOAD_MB` | `15`                                         | Upload size limit              |
+| `MAX_PACKAGE_MB` | `25`                                        | Size limit for the generator ZIP |
+| `PYTHON_BIN`    | `python` (win) / `python3`                   | Interpreter that runs `resume_fill.py` |
+| `TEMPLATES_DIR` | `../Chatgpt Extension/Temp`                  | `Temp_<profile>.docx` templates |
+| `RESUME_FILL_SCRIPT` | `../Chatgpt Extension/resume_fill.py`   | The filler script              |
+| `PACKAGE_CONCURRENCY` | `3`                                    | How many fills may run at once |
+| `PACKAGE_TIMEOUT_MS` | `120000`                                | Ceiling on a single fill       |
 
 ## Run
 
@@ -65,9 +84,11 @@ path) or a deep link to `/analytics` will 404.
 ## What the app does
 
 **Add application** opens a form with the profile dropdown, job title, company, job link,
-job description, the resume file picker, status and notes. On upload the server pulls the
-plain text out of `.docx` files with `mammoth` and stores it alongside the record, so the
-search box also matches text that only exists inside the resume.
+job description, status, notes, and a drop box each for the resume and the cover letter -
+drag a file onto one or click it to browse. Both are optional: most records are filed by
+the extension before either document exists. On upload the server pulls the plain text out
+of `.docx` files with `mammoth` and stores it alongside the record, so the search box also
+matches text that only exists inside either document.
 
 The table shows every record with:
 
@@ -75,11 +96,39 @@ The table shows every record with:
 - a live search box across job title, company, description, notes and resume text
 - filters by profile and status, plus clickable per-profile count tiles
 - expandable rows for the full job description and notes
-- a download link for the stored resume, and edit/delete per row
+- a resume and a cover letter cell per row: the stored file as a download link, and an
+  **Upload**/**Replace** picker that files a document without opening the form
+- edit/delete per row
 - pagination, 25 rows per page
 
-Deleting a record also deletes its file from disk; replacing a resume on edit removes the
-old file only after the new record is saved.
+Deleting a record also deletes both files from disk; replacing a document on edit removes
+the old file only after the new record is saved.
+
+## The automatic pipeline
+
+The Chrome extension in [`Chatgpt Extension/`](Chatgpt%20Extension/) turns one paste of a
+job description into a filed application, with no step in between:
+
+1. **Send.** The panel files the application - profile, job title, company, link, the JD -
+   and sends the JD to ChatGPT with the profile's template DOCX and the generator prompt.
+2. **Watch.** The content script watches that chat. The generator prompt contracts exactly
+   one `Resume_Package_<Candidate>.zip` back, holding `resume_content.json` and
+   `Cover_Letter_<Candidate>.docx`.
+3. **Download.** When the reply finishes, the ZIP is clicked - so it lands in your Downloads
+   folder as usual - and its bytes are read at the same time.
+4. **Fill.** The ZIP is posted to `POST /api/applications/:id/package`. The server unpacks
+   it and runs `resume_fill.py` to pour the JSON into `Temp_<profile>.docx`. **The resume
+   DOCX is made here, not by ChatGPT** - that is why the prompt forbids one in the ZIP: the
+   layout is this repo's, and only the content is generated.
+5. **File.** The filled resume and the cover letter both land on the record, and their text
+   is extracted so the search box reaches inside them.
+
+**Several bids at once is the normal case.** Each send is one *job*, tied to its own record
+and its own chat, and the panel lists them all with their state - waiting, watching,
+downloading, filing, filed. The server gives every fill its own temp directory, so runs
+never share a folder, and `PACKAGE_CONCURRENCY` caps how many Python processes exist at
+once. Nothing is lost if a step fails: the ZIP stays on the job for a one-click retry, and
+every row can take the two files by hand instead.
 
 **Company peek (Ctrl+Shift+X).** Select a company name and press Ctrl+Shift+X to see every
 application already filed under that company: the profile it went out under, the job title,
@@ -106,13 +155,20 @@ the API or the web app running at all. See [Desktop company peek](#desktop-compa
 | `GET`    | `/api/applications/company-lookup` | `q` (2+ chars), `limit`; companies matching the selected text |
 | `GET`    | `/api/analytics`               | `days` = `7` \| `30` \| `90` \| `365` \| `all` (default `30`)   |
 | `GET`    | `/api/applications/:id`        | Single record                                                 |
-| `GET`    | `/api/applications/:id/resume` | Downloads the stored file under its original name             |
-| `POST`   | `/api/applications`            | `multipart/form-data`, file field `resume`                    |
-| `PUT`    | `/api/applications/:id`        | Partial update; send `resume` again to replace the file       |
-| `DELETE` | `/api/applications/:id`        | Removes the record and its file                               |
+| `GET`    | `/api/applications/:id/resume` | Downloads the stored resume under its original name           |
+| `GET`    | `/api/applications/:id/cover-letter` | Downloads the stored cover letter                       |
+| `POST`   | `/api/applications`            | `multipart/form-data`, file fields `resume` and `coverLetter` |
+| `POST`   | `/api/applications/:id/package` | The generator ZIP, as file field `package` or as `packageUrl` for the server to fetch. Unzips it, fills the profile's template through `resume_fill.py`, and attaches both documents |
+| `PUT`    | `/api/applications/:id`        | Partial update; send either file again to replace it          |
+| `DELETE` | `/api/applications/:id`        | Removes the record and both files                             |
 
 `profileName` and `jobTitle` are required on create; `profileName` and `status` are validated
 against the fixed lists. Uploads are limited to `.docx`, `.doc` and `.pdf`.
+
+`/package` answers `422` when the ZIP is not what the prompt contracted - no
+`resume_content.json`, or a template placeholder the generated JSON has no value for. The
+message names the missing keys, and it reaches the extension panel as-is, because that is
+the one error worth reading in full.
 
 ## Desktop company peek
 
@@ -194,8 +250,9 @@ server/
   src/config.js                env config, PROFILES, STATUSES
   src/db.js                    Mongoose connection
   src/models/Application.js    schema
-  src/routes/applications.js   CRUD, search, stats, download
+  src/routes/applications.js   CRUD, search, stats, downloads, the ZIP endpoint
   src/routes/analytics.js      aggregation for the analytics page
+  src/services/resumePackage.js  unzip, run resume_fill.py, store both documents
   src/middleware/upload.js     multer disk storage + file-type filter
   uploads/                     stored resume files (git-ignored)
 client/

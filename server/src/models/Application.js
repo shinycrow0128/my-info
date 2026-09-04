@@ -1,13 +1,15 @@
 import mongoose from 'mongoose';
 import { PROFILES, STATUSES } from '../config.js';
 
-const resumeSchema = new mongoose.Schema(
+// One stored document - the resume and the cover letter are the same shape, so
+// they share a schema rather than drifting apart.
+const storedFileSchema = new mongoose.Schema(
   {
     originalName: { type: String, required: true },
     storedName: { type: String, required: true },
     mimeType: { type: String, default: '' },
     size: { type: Number, default: 0 },
-    // Plain text pulled out of the .docx so the resume body is searchable.
+    // Plain text pulled out of the .docx so the body is searchable.
     text: { type: String, default: '' },
   },
   { _id: false },
@@ -23,7 +25,8 @@ const applicationSchema = new mongoose.Schema(
     status: { type: String, enum: STATUSES, default: 'applied', index: true },
     appliedAt: { type: Date, default: Date.now },
     notes: { type: String, default: '' },
-    resume: { type: resumeSchema, default: null },
+    resume: { type: storedFileSchema, default: null },
+    coverLetter: { type: storedFileSchema, default: null },
   },
   { timestamps: true },
 );

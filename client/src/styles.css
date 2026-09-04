@@ -287,6 +287,37 @@ input[type='file'] {
   vertical-align: bottom;
 }
 
+/* Resume / cover letter cell: the file, and the picker that fills or replaces it. */
+.doc-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.muted-inline {
+  color: var(--muted);
+}
+
+.doc-upload {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.doc-upload:hover:enabled {
+  color: var(--accent);
+}
+
+.doc-upload:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.doc-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .profile-chip {
   display: inline-block;
   padding: 3px 9px;
@@ -443,6 +474,70 @@ input[type='file'] {
 .hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Half-width field inside a full-width column - the date next to nothing. */
+.field.half {
+  max-width: calc(50% - 7px);
+}
+
+/* Drop a document here, or click to browse. */
+.filedrop {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 76px;
+  justify-content: center;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  cursor: pointer;
+  text-align: center;
+}
+
+.filedrop:hover,
+.filedrop:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* While a file is being dragged over it. */
+.filedrop.is-over {
+  border-color: var(--accent);
+  border-style: solid;
+  background: rgba(91, 140, 255, 0.1);
+}
+
+.filedrop[data-state='picked'] {
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.filedrop-name {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filedrop[data-state='empty'] .filedrop-name {
+  color: var(--muted);
+}
+
+.filedrop-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.filedrop-clear {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+/* The real input stays in the DOM - the box in front of it does the clicking. */
+.filedrop-input {
+  display: none;
 }
 
 .alert {

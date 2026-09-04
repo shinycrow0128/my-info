@@ -51,6 +51,14 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+/** The other direction: base64 back into bytes, for a ZIP on its way out. */
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 /** Read a file bundled with the extension into the base64 attachment shape. */
 async function loadBundledFile(path, mime) {
   // encodeURI because these names carry spaces and parentheses.

@@ -43,28 +43,44 @@ function fetchTrackerMeta() {
   return trackerRequest("/api/meta");
 }
 
-/** Empty fields are left off so the server's own defaults apply. */
-function createApplication(fields, file) {
+/**
+ * Empty fields are left off so the server's own defaults apply. No documents
+ * ride along: neither exists at send time, and both arrive later on the ZIP.
+ */
+function createApplication(fields) {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) {
     if (value !== "" && value !== null && value !== undefined) {
       body.append(key, value);
     }
   }
-  if (file) body.append("resume", file);
 
   return trackerRequest("/api/applications", { method: "POST", body });
 }
 
 /**
- * Attach the resume to a record that was created without one - the generated
- * file does not exist yet at send time, so it arrives on a later popup visit.
+ * Hand the generator's ZIP to the server, which unpacks it, fills the profile's
+ * template with resume_content.json through resume_fill.py, and puts both the
+ * resume and the cover letter on the record in one request.
+ *
+ * `data` is the archive itself, base64 encoded. When the browser could not read
+ * the signed download cross-origin there is only a `url`, and the server
+ * fetches it - node is not bound by the page's CORS rules.
  */
-function attachResume(id, file) {
+function uploadPackage(id, { name, data, url }, profileName) {
   const body = new FormData();
-  body.append("resume", file);
-  return trackerRequest("/api/applications/" + encodeURIComponent(id), {
-    method: "PUT",
+  if (profileName) body.append("profileName", profileName);
+  if (data) {
+    const blob = new Blob([base64ToBytes(data)], { type: "application/zip" });
+    body.append("package", blob, name || "Resume_Package.zip");
+  } else if (url) {
+    body.append("packageUrl", url);
+  } else {
+    return Promise.reject(new Error("Nothing to upload - no ZIP bytes and no URL."));
+  }
+
+  return trackerRequest("/api/applications/" + encodeURIComponent(id) + "/package", {
+    method: "POST",
     body,
   });
 }

@@ -1,10 +1,18 @@
+/**
+ * The side panel: one form, one button.
+ *
+ * Filing a bid and generating its documents used to be two separate actions.
+ * They are one now - "Send to ChatGPT" files the application from the fields
+ * above it and sends the job description in the same click. The resume and the
+ * cover letter are neither asked for nor handed back here: they are written by
+ * the server onto the tracker record, and the panel only reports that they
+ * were. The tracker UI is where a filed bid is read.
+ */
+
 const promptEl = document.getElementById("prompt");
 const sendEl = document.getElementById("send");
 const statusEl = document.getElementById("status");
-const templateEl = document.getElementById("template");
 
-const saveTrackEl = document.getElementById("save-track");
-const trackFieldsEl = document.getElementById("track-fields");
 const trackErrorEl = document.getElementById("track-error");
 const trackRetryEl = document.getElementById("track-retry");
 const retryMetaEl = document.getElementById("retry-meta");
@@ -14,21 +22,28 @@ const jobTitleEl = document.getElementById("job-title");
 const companyEl = document.getElementById("company");
 const jobLinkEl = document.getElementById("job-link");
 const appliedAtEl = document.getElementById("applied-at");
-const resumeFileEl = document.getElementById("resume-file");
 const notesEl = document.getElementById("notes");
 
 const popoutEl = document.getElementById("popout");
 
-const pendingEl = document.getElementById("pending");
-const pendingTitleEl = document.getElementById("pending-title");
-const pendingFileEl = document.getElementById("pending-file");
-const pendingAttachEl = document.getElementById("pending-attach");
-const pendingDismissEl = document.getElementById("pending-dismiss");
+const jobsEl = document.getElementById("jobs");
 
-// Fields the tracker section keeps across an accidental popup close. The
-// page-derived ones are re-read from the tab instead when it has moved on.
+// Fields the form keeps across an accidental panel close. The page-derived
+// ones are re-read from the tab instead when it has moved on.
 const TRACK_DRAFT_FIELDS = ["jobTitle", "company", "jobLink", "appliedAt", "notes"];
 const PAGE_DERIVED = ["jobTitle", "company", "jobLink"];
+
+// Everything the send disables while it runs.
+const FORM_ELEMENTS = [
+  promptEl,
+  profileNameEl,
+  statusSelectEl,
+  jobTitleEl,
+  companyEl,
+  jobLinkEl,
+  appliedAtEl,
+  notesEl,
+];
 
 // The same page serves the docked side panel and the popped-out window; the
 // window is the one opened with ?view=window, and it has nothing to pop out of.
@@ -42,34 +57,31 @@ let metaLoaded = false;
 // when you move to the next listing.
 let pageGuess = { jobTitle: "", company: "", jobLink: "" };
 
-for (const template of RESUME_TEMPLATES) {
-  const option = document.createElement("option");
-  option.value = template.id;
-  option.textContent = template.label;
-  templateEl.append(option);
-}
-
 init();
 
 async function init() {
   const stored = await chrome.storage.local.get([
     "draft",
-    "templateId",
     "trackProfile",
     "trackStatus",
     "trackDraft",
-    "pendingApplication",
+    "jobs",
   ]);
 
   if (stored.draft) promptEl.value = stored.draft;
-  if (stored.templateId) templateEl.value = stored.templateId;
 
   popoutEl.hidden = IS_POPOUT;
-  renderPending(stored.pendingApplication);
+  renderJobs(stored.jobs);
   promptEl.focus();
 
+  // The bundled templates are the offline-safe roster: a profile can be picked
+  // - and so a prompt sent - even with the tracker down.
+  fillProfiles(
+    RESUME_TEMPLATES.map((template) => template.label),
+    stored.trackProfile,
+  );
   await fillTrackFields(stored);
-  // The roster is the server's; without it the Profile dropdown stays empty.
+  // The server's own roster wins once it answers; it is what the API validates.
   await loadMeta(stored);
 }
 
@@ -97,16 +109,36 @@ async function fillTrackFields(stored) {
 async function loadMeta(stored) {
   try {
     const meta = await fetchTrackerMeta();
-    fillSelect(profileNameEl, meta.profiles, stored.trackProfile, "Select a profile…");
+    // A name this build has no template for is still offered - it files fine,
+    // it just falls back to a bundled template for the ChatGPT attachment.
+    const profiles = [
+      ...new Set([...(meta.profiles || []), ...RESUME_TEMPLATES.map((t) => t.label)]),
+    ];
+    fillProfiles(profiles, profileNameEl.value || stored.trackProfile);
     fillSelect(statusSelectEl, meta.statuses, stored.trackStatus || "applied");
-    // The template is the profile, and it is the one the user already picked -
-    // so it wins over whatever was stored.
-    syncProfileToTemplate();
     metaLoaded = true;
     setTrackError("");
   } catch (error) {
     setTrackError(String(error.message || error));
   }
+}
+
+/**
+ * The profile is the resume template as well - the two lists hold the same
+ * names on purpose - so choosing one here settles both, and the context menu
+ * (which has no panel to read) picks the template up from storage.
+ */
+function fillProfiles(profiles, selected) {
+  fillSelect(profileNameEl, profiles, selected, "Select a profile…");
+  rememberProfile();
+}
+
+function rememberProfile() {
+  const profileName = profileNameEl.value;
+  const patch = { trackProfile: profileName };
+  const template = RESUME_TEMPLATES.find((t) => t.label === profileName);
+  if (template) patch.templateId = template.id;
+  chrome.storage.local.set(patch);
 }
 
 function fillSelect(select, values, selected, placeholder) {
@@ -136,9 +168,15 @@ function trackInput(key) {
   }[key];
 }
 
-/** A chrome:// or extension page has nothing worth lifting off it. */
+// ChatGPT's own tabs. Guessing a job title off one gives "ChatGPT", which is
+// then what the bid is filed and labelled as - so they are skipped like a
+// chrome:// page is.
+const OWN_TABS = /^https:\/\/(chatgpt\.com|chat\.openai\.com)\//;
+
+/** A page worth lifting a job listing off: not chrome://, not ChatGPT itself. */
 function isPage(tab) {
-  return Boolean(tab && /^https?:/.test(tab.url || ""));
+  const url = (tab && tab.url) || "";
+  return /^https?:/.test(url) && !OWN_TABS.test(url);
 }
 
 /**
@@ -219,36 +257,6 @@ promptEl.addEventListener("input", () => {
   chrome.storage.local.set({ draft: promptEl.value });
 });
 
-// The template choice is stored so the context menu can use it too.
-templateEl.addEventListener("change", () => {
-  chrome.storage.local.set({ templateId: templateEl.value });
-  syncProfileToTemplate();
-});
-
-/**
- * A tracker profile and a resume template are the same person - the two lists
- * hold the same names on purpose - so the two dropdowns move together. Setting
- * `.value` fires no change event, so neither direction loops.
- */
-function syncProfileToTemplate() {
-  const label = templateById(templateEl.value).label;
-  if (![...profileNameEl.options].some((option) => option.value === label)) {
-    // The server's roster is the authority; it may not know this template yet.
-    return false;
-  }
-  profileNameEl.value = label;
-  chrome.storage.local.set({ trackProfile: label });
-  return true;
-}
-
-function syncTemplateToProfile() {
-  const template = RESUME_TEMPLATES.find((t) => t.label === profileNameEl.value);
-  if (!template) return false;
-  templateEl.value = template.id;
-  chrome.storage.local.set({ templateId: template.id });
-  return true;
-}
-
 // A tracker that was down when the panel opened gets another chance here.
 retryMetaEl.addEventListener("click", async () => {
   retryMetaEl.disabled = true;
@@ -257,10 +265,7 @@ retryMetaEl.addEventListener("click", async () => {
   retryMetaEl.disabled = false;
 });
 
-profileNameEl.addEventListener("change", () => {
-  chrome.storage.local.set({ trackProfile: profileNameEl.value });
-  syncTemplateToProfile();
-});
+profileNameEl.addEventListener("change", rememberProfile);
 
 statusSelectEl.addEventListener("change", () => {
   chrome.storage.local.set({ trackStatus: statusSelectEl.value });
@@ -278,12 +283,13 @@ promptEl.addEventListener("keydown", (event) => {
 });
 
 sendEl.addEventListener("click", send);
-saveTrackEl.addEventListener("click", saveApplication);
 popoutEl.addEventListener("click", openPopout);
-pendingAttachEl.addEventListener("click", attachPendingResume);
-pendingDismissEl.addEventListener("click", () => {
-  chrome.storage.local.remove("pendingApplication");
-  renderPending(null);
+
+// The jobs are written by the service worker as each watch reports in, so the
+// panel follows storage rather than polling anything.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.jobs) renderJobs(changes.jobs.newValue);
 });
 
 /**
@@ -325,14 +331,111 @@ async function saveTrackDraft() {
   chrome.storage.local.set({ trackDraft });
 }
 
-function renderPending(pending) {
-  if (!pending || !pending.id) {
-    pendingEl.hidden = true;
-    return;
+/* -------------------------------------------------------------------------
+   Bids in flight
+
+   One row per application that is still waiting on its documents - sent and
+   being watched, downloaded and being filed, or stuck. It says how far the bid
+   got and nothing else: the documents themselves belong to the tracker record,
+   which is where they are read from. Several bids run at once, so this is a
+   list, and a stuck row carries its own way out.
+   ------------------------------------------------------------------------- */
+
+const JOB_STATE_LABELS = {
+  awaiting: "waiting",
+  watching: "watching chat",
+  downloading: "downloading",
+  uploading: "filing",
+  done: "filed",
+  failed: "failed",
+  orphan: "downloaded",
+};
+
+const FINISHED_STATES = ["done", "orphan"];
+const FINISHED_SHOWN = 3;
+
+/**
+ * Everything still in flight, plus the last few that landed. On a busy day the
+ * finished rows would otherwise bury the bids that still need something.
+ */
+function renderJobs(jobs) {
+  const list = Object.values(jobs || {}).sort(
+    (a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0),
+  );
+  let finished = 0;
+  const shown = list.filter((job) => {
+    if (!FINISHED_STATES.includes(job.state)) return true;
+    finished += 1;
+    return finished <= FINISHED_SHOWN;
+  });
+
+  jobsEl.textContent = "";
+  jobsEl.hidden = !shown.length;
+  for (const job of shown) jobsEl.append(jobRow(job));
+}
+
+async function refreshJobs() {
+  const { jobs } = await chrome.storage.local.get("jobs");
+  renderJobs(jobs);
+}
+
+function linkButton(text, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "link";
+  button.textContent = text;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function jobRow(job) {
+  const row = document.createElement("div");
+  row.className = "job";
+  row.dataset.state = job.state;
+
+  const head = document.createElement("div");
+  head.className = "job-head";
+  const label = document.createElement("span");
+  label.className = "job-label";
+  label.textContent = job.label || "Untitled bid";
+  label.title = label.textContent;
+  const state = document.createElement("span");
+  state.className = "job-state";
+  state.textContent = JOB_STATE_LABELS[job.state] || job.state;
+  head.append(label, state);
+
+  const detail = document.createElement("p");
+  detail.className = "job-detail";
+  detail.textContent = job.error || job.detail || "";
+  detail.hidden = !detail.textContent;
+
+  row.append(head, detail);
+
+  const actions = document.createElement("div");
+  actions.className = "job-actions";
+
+  // Retrying costs nothing: the ZIP is still on the job until the tracker
+  // has taken it.
+  if (job.state === "failed" && job.package) {
+    actions.append(linkButton("Retry", () => retryJob(job.id)));
   }
-  pendingTitleEl.textContent = pending.label || "last application";
-  pendingFileEl.value = "";
-  pendingEl.hidden = false;
+  actions.append(linkButton("Dismiss", () => forgetJob(job.id)));
+  row.append(actions);
+
+  return row;
+}
+
+function forgetJob(id) {
+  return chrome.runtime.sendMessage({ type: "CHATGPT_FORGET_JOB", jobId: id });
+}
+
+async function retryJob(id) {
+  setStatus("Filing into the tracker…");
+  const response = await chrome.runtime.sendMessage({ type: "CHATGPT_RETRY_JOB", jobId: id });
+  setStatus(
+    response?.ok ? "Retried." : String(response?.error || "Retry failed."),
+    response?.ok ? "ok" : "error",
+  );
 }
 
 function setTrackError(text) {
@@ -348,20 +451,14 @@ function setStatus(text, state = "") {
 }
 
 function setBusy(busy) {
-  // Both buttons rest while either one is working - they share a status line.
   sendEl.disabled = busy;
-  saveTrackEl.disabled = busy;
-  templateEl.disabled = busy;
-  promptEl.disabled = busy;
-  for (const el of trackFieldsEl.querySelectorAll("input, select, textarea")) {
-    el.disabled = busy;
-  }
+  for (const el of FORM_ELEMENTS) el.disabled = busy;
 }
 
-/** Throws with the message the popup should show; the server checks these too. */
+/** Throws with the message the panel should show; the server checks these too. */
 function readTrackFields(jobDescription) {
-  if (!profileNameEl.value) throw new Error("Pick a profile for the tracker.");
-  if (!jobTitleEl.value.trim()) throw new Error("The tracker needs a job title.");
+  if (!profileNameEl.value) throw new Error("Pick a profile first.");
+  if (!jobTitleEl.value.trim()) throw new Error("The job title is needed to file this one.");
 
   return {
     profileName: profileNameEl.value,
@@ -375,12 +472,26 @@ function readTrackFields(jobDescription) {
   };
 }
 
+/**
+ * The one action: file the application, then send its job description to
+ * ChatGPT with the profile's resume template attached. The record is created
+ * first because the ZIP comes back minutes from now and needs somewhere to
+ * land - its id rides along with the send.
+ */
 async function send() {
-  const input = promptEl.value.trim();
+  const jobDescription = promptEl.value.trim();
 
-  if (!input) {
+  if (!jobDescription) {
     setStatus("Paste the job description first.", "error");
     promptEl.focus();
+    return;
+  }
+
+  let fields;
+  try {
+    fields = readTrackFields(jobDescription);
+  } catch (error) {
+    setStatus(error.message, "error");
     return;
   }
 
@@ -391,104 +502,92 @@ async function send() {
     // Bundled resume files, in the order the generator prompt expects. There
     // is no send without them - a naked JD gets a resume for whoever ChatGPT
     // happens to remember.
-    const files = await buildResumeAttachments(templateEl.value);
-    const text = buildResumePrompt(input);
+    const files = await buildResumeAttachments(templateIdFor(fields.profileName));
+    const job = await ensureApplication(fields);
 
     setStatus("Uploading…");
 
     const response = await chrome.runtime.sendMessage({
       type: "CHATGPT_DELIVER_PROMPT",
-      text,
+      text: buildResumePrompt(jobDescription),
       files,
+      job,
     });
 
     if (!response?.ok) throw new Error(response?.error || "Unknown error.");
 
-    // The box is left alone: Save to tracker reads the job description out of
-    // it, and it is paste-over-able for the next job either way.
-    setStatus("Done - " + response.detail + ".", "ok");
+    // Filed and sent: the form empties for the next listing, and the row in
+    // the list above is where this bid is followed from here.
+    await clearForm();
+    await refreshJobs();
+    setStatus("Filed " + job.label + " - " + response.detail + ".", "ok");
   } catch (error) {
     setStatus(String(error.message || error), "error");
   } finally {
     setBusy(false);
   }
+}
+
+/** The bundled template for a profile; the roster may know names this build does not. */
+function templateIdFor(profileName) {
+  const template = RESUME_TEMPLATES.find((t) => t.label === profileName);
+  return template ? template.id : RESUME_TEMPLATES[0].id;
 }
 
 /**
- * Files the application. Independent of the ChatGPT send - either order works,
- * and neither button touches the other's fields. The job description is read
- * from the prompt box, which is why sending does not empty it while the
- * tracker section is open.
+ * The record this bid files into. A job filed by a send that failed before it
+ * reached ChatGPT is reused rather than duplicated, so pressing the button
+ * again after a missing tab is still one application.
  */
-async function saveApplication() {
-  let fields;
-  try {
-    fields = readTrackFields(promptEl.value.trim());
-  } catch (error) {
-    setStatus(error.message, "error");
-    return;
-  }
+async function ensureApplication(fields) {
+  const reusable = await findReusableJob(fields);
+  if (reusable) return reusable;
 
-  const file = resumeFileEl.files[0] || null;
-
-  setBusy(true);
-  setStatus("Saving to the tracker…");
-
-  let saved;
-  try {
-    saved = await createApplication(fields, file);
-  } catch (error) {
-    setStatus(String(error.message || error), "error");
-    return;
-  } finally {
-    setBusy(false);
-  }
-
-  await clearTrackDraft();
-
-  if (file) {
-    setStatus("Saved to the tracker with the resume.", "ok");
-    return;
-  }
-
-  // No file yet: park the id so the next popup visit can attach the real one.
-  await chrome.storage.local.set({
-    pendingApplication: {
-      id: saved.id,
-      label: [saved.jobTitle, saved.company].filter(Boolean).join(" - "),
-      createdAt: Date.now(),
-    },
-  });
-  setStatus("Saved. Attach the resume from this panel once you have it.", "ok");
+  const saved = await createApplication(fields);
+  return {
+    applicationId: saved.id,
+    label: labelFor(saved),
+    profileName: saved.profileName,
+    jobTitle: saved.jobTitle,
+    company: saved.company,
+  };
 }
 
-async function clearTrackDraft() {
-  await chrome.storage.local.remove("trackDraft");
+/** The same job, filed but never sent - matched on what the user typed. */
+async function findReusableJob(fields) {
+  const { jobs } = await chrome.storage.local.get("jobs");
+  const match = Object.values(jobs || {}).find(
+    (job) =>
+      job.state === "awaiting" &&
+      job.applicationId &&
+      job.profileName === fields.profileName &&
+      job.jobTitle === fields.jobTitle &&
+      (job.company || "") === (fields.company || ""),
+  );
+  return match
+    ? {
+        id: match.id,
+        applicationId: match.applicationId,
+        label: match.label,
+        profileName: match.profileName,
+        jobTitle: match.jobTitle,
+        company: match.company,
+      }
+    : null;
+}
+
+function labelFor(saved) {
+  return [saved.jobTitle, saved.company].filter(Boolean).join(" - ") || "Untitled bid";
+}
+
+/** Emptied on a send that went through, ready for the next listing. */
+async function clearForm() {
+  await chrome.storage.local.remove(["trackDraft", "draft"]);
   for (const key of TRACK_DRAFT_FIELDS) trackInput(key).value = "";
-  resumeFileEl.value = "";
+  promptEl.value = "";
   appliedAtEl.value = todayInput();
-}
-
-async function attachPendingResume() {
-  const file = pendingFileEl.files[0] || null;
-  if (!file) {
-    setStatus("Pick the resume file to attach.", "error");
-    return;
-  }
-
-  const { pendingApplication } = await chrome.storage.local.get("pendingApplication");
-  if (!pendingApplication) return renderPending(null);
-
-  pendingAttachEl.disabled = true;
-  setStatus("Attaching…");
-  try {
-    await attachResume(pendingApplication.id, file);
-    await chrome.storage.local.remove("pendingApplication");
-    renderPending(null);
-    setStatus("Resume attached.", "ok");
-  } catch (error) {
-    setStatus(String(error.message || error), "error");
-  } finally {
-    pendingAttachEl.disabled = false;
-  }
+  // Nothing is hand-typed any more, so the listing on screen fills the
+  // page-derived fields again.
+  pageGuess = { jobTitle: "", company: "", jobLink: "" };
+  await refreshFromPage();
 }

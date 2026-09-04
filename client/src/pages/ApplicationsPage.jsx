@@ -212,6 +212,7 @@ export default function ApplicationsPage() {
         onSort={handleSort}
         onEdit={openEdit}
         onDelete={handleDelete}
+        onChanged={load}
       />
 
       <footer className="pager">

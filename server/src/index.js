@@ -47,9 +47,11 @@ app.use((req, res) => {
 // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity.
 app.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
+    // The ZIP has its own, larger ceiling than the documents do.
+    const limitBytes = err.field === 'package' ? config.maxPackageBytes : config.maxUploadBytes;
     const message =
       err.code === 'LIMIT_FILE_SIZE'
-        ? `Resume is too large (max ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB)`
+        ? `${err.field || 'File'} is too large (max ${Math.round(limitBytes / 1024 / 1024)} MB)`
         : err.message;
     return res.status(400).json({ error: message });
   }

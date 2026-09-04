@@ -43,6 +43,10 @@ export function resumeUrl(id) {
   return `${BASE}/api/applications/${id}/resume`;
 }
 
+export function coverLetterUrl(id) {
+  return `${BASE}/api/applications/${id}/cover-letter`;
+}
+
 export function getAnalytics(days) {
   return request(`/api/analytics?days=${encodeURIComponent(days)}`);
 }

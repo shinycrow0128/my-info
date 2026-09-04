@@ -52,24 +52,9 @@ body {
 }
 
 #popout[hidden],
-.pending[hidden],
+.jobs[hidden],
 .track-error[hidden],
 .track-retry[hidden] { display: none; }
-
-
-/* Divides the ChatGPT half of the panel from the tracker half. */
-.section {
-  margin: 16px 0 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-#track-fields { margin-bottom: 4px; }
 
 .grid-2 {
   display: grid;
@@ -92,24 +77,58 @@ body {
   font-size: 11px;
 }
 
-/* Shown when the last tracked application is still missing its resume. */
-.pending {
+/* Bids in flight: one row each, from "sent" through to "filed". */
+.jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 12px;
-  padding: 9px 10px;
+}
+
+.job {
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--field);
 }
 
-.pending-text {
-  margin: 0 0 7px;
-  color: var(--muted);
-  font-size: 11px;
+.job-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.pending-text b { color: var(--fg); }
+.job-label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-.pending-actions {
+/* The badge carries the state, so it is the one coloured thing in the row. */
+.job-state {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.job[data-state="done"] .job-state { color: var(--accent); }
+.job[data-state="failed"] .job-state { color: var(--error); }
+
+.job-detail {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.job-detail[hidden] { display: none; }
+
+.job-actions {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
@@ -148,11 +167,10 @@ input[type="date"] {
   font-weight: 600;
 }
 
-input[type="file"] {
-  width: 100%;
-  margin-bottom: 12px;
+/* The note under the profile picker, which stands in for two fields. */
+.hint {
+  margin: -6px 0 12px;
   color: var(--muted);
-  font: inherit;
   font-size: 11px;
 }
 
@@ -196,18 +214,6 @@ button {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-}
-
-/* The tracker's own action: same shape, quieter than the ChatGPT send. */
-button.secondary {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
-}
-
-button.secondary:hover:enabled {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 button:disabled {

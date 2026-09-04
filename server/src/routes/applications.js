@@ -1,35 +1,41 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
-import mammoth from 'mammoth';
 import { Application } from '../models/Application.js';
-import { uploadResume } from '../middleware/upload.js';
+import { uploadDocuments, uploadPackage } from '../middleware/upload.js';
+import { buildFromPackage, extractDocxText, fetchPackage } from '../services/resumePackage.js';
 import { config, PROFILES, STATUSES } from '../config.js';
 
 export const router = express.Router();
 
 const SORTABLE = new Set(['createdAt', 'appliedAt', 'jobTitle', 'profileName', 'company', 'status']);
 
+// The two documents an application carries. Both are optional on every route:
+// ChatGPT has usually not written either one at the moment the job is filed.
+const DOCUMENTS = ['resume', 'coverLetter'];
+
 function wrap(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
 // multer is callback based; promisify it so route handlers can await the parse.
-function parseUpload(req, res) {
+function runMulter(middleware, req, res) {
   return new Promise((resolve, reject) => {
-    uploadResume(req, res, (err) => (err ? reject(err) : resolve()));
+    middleware(req, res, (err) => (err ? reject(err) : resolve()));
   });
 }
 
+const parseUpload = (req, res) => runMulter(uploadDocuments, req, res);
+const parsePackage = (req, res) => runMulter(uploadPackage, req, res);
+
+/** The uploaded file for a field, or null - `.fields()` hands back arrays. */
+function uploaded(req, field) {
+  return (req.files && req.files[field] && req.files[field][0]) || null;
+}
+
 async function extractText(file) {
-  if (!file || path.extname(file.originalname).toLowerCase() !== '.docx') return '';
-  try {
-    const { value } = await mammoth.extractRawText({ path: file.path });
-    return value.trim();
-  } catch (err) {
-    console.warn(`[upload] could not read text from ${file.originalname}:`, err.message);
-    return '';
-  }
+  if (!file) return '';
+  return extractDocxText(file.path);
 }
 
 async function removeFile(storedName) {
@@ -101,7 +107,7 @@ function readFields(body, { partial = false } = {}) {
   return out;
 }
 
-function fileToResume(file, text) {
+function fileToStored(file, text) {
   return {
     originalName: file.originalname,
     storedName: file.filename,
@@ -109,6 +115,29 @@ function fileToResume(file, text) {
     size: file.size,
     text,
   };
+}
+
+/** Drop every file this request wrote - used when it is rejected after parsing. */
+async function discardUploads(req) {
+  for (const field of DOCUMENTS) {
+    const file = uploaded(req, field);
+    if (file) await removeFile(file.filename);
+  }
+}
+
+/**
+ * Put the uploaded documents on the record and return the stored names they
+ * replaced, so the old files are only unlinked once the save has gone through.
+ */
+async function applyUploads(req, doc) {
+  const replaced = [];
+  for (const field of DOCUMENTS) {
+    const file = uploaded(req, field);
+    if (!file) continue;
+    if (doc[field] && doc[field].storedName) replaced.push(doc[field].storedName);
+    doc[field] = fileToStored(file, await extractText(file));
+  }
+  return replaced;
 }
 
 // GET /api/applications - the table feed: filter, search, sort, paginate.
@@ -134,12 +163,14 @@ router.get(
         { notes: rx },
         { 'resume.originalName': rx },
         { 'resume.text': rx },
+        { 'coverLetter.originalName': rx },
+        { 'coverLetter.text': rx },
       ];
     }
 
     const [rows, total] = await Promise.all([
       Application.find(filter)
-        .select('-resume.text')
+        .select('-resume.text -coverLetter.text')
         .sort({ [sortBy]: sortDir })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -232,20 +263,26 @@ router.get(
   }),
 );
 
-// GET /api/applications/:id/resume - send the stored resume back to the browser.
-router.get(
-  '/:id/resume',
-  wrap(async (req, res) => {
-    const doc = await Application.findById(req.params.id).select('resume');
-    if (!doc || !doc.resume || !doc.resume.storedName) {
-      return res.status(404).json({ error: 'No resume on file' });
+// GET /api/applications/:id/resume and /cover-letter - send a stored document
+// back to the browser. Same handler; only the field differs.
+function sendDocument(field, label) {
+  return wrap(async (req, res) => {
+    const doc = await Application.findById(req.params.id).select(field);
+    const stored = doc && doc[field];
+    if (!stored || !stored.storedName) {
+      return res.status(404).json({ error: `No ${label} on file` });
     }
-    const filePath = path.join(config.uploadDir, doc.resume.storedName);
-    res.download(filePath, doc.resume.originalName, (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: 'Resume file is missing on disk' });
+    const filePath = path.join(config.uploadDir, stored.storedName);
+    res.download(filePath, stored.originalName, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: `The ${label} file is missing on disk` });
+      }
     });
-  }),
-);
+  });
+}
+
+router.get('/:id/resume', sendDocument('resume', 'resume'));
+router.get('/:id/cover-letter', sendDocument('coverLetter', 'cover letter'));
 
 router.post(
   '/',
@@ -255,13 +292,13 @@ router.post(
     try {
       fields = readFields(req.body);
     } catch (err) {
-      if (req.file) await removeFile(req.file.filename);
+      await discardUploads(req);
       throw err;
     }
 
-    if (req.file) fields.resume = fileToResume(req.file, await extractText(req.file));
-
-    const doc = await Application.create(fields);
+    const doc = new Application(fields);
+    await applyUploads(req, doc);
+    await doc.save();
     res.status(201).json(doc.toJSON());
   }),
 );
@@ -272,7 +309,7 @@ router.put(
     await parseUpload(req, res);
     const doc = await Application.findById(req.params.id);
     if (!doc) {
-      if (req.file) await removeFile(req.file.filename);
+      await discardUploads(req);
       return res.status(404).json({ error: 'Application not found' });
     }
 
@@ -280,18 +317,74 @@ router.put(
     try {
       fields = readFields(req.body, { partial: true });
     } catch (err) {
-      if (req.file) await removeFile(req.file.filename);
+      await discardUploads(req);
       throw err;
     }
 
-    const previous = doc.resume ? doc.resume.storedName : null;
     Object.assign(doc, fields);
-    if (req.file) doc.resume = fileToResume(req.file, await extractText(req.file));
+    const replaced = await applyUploads(req, doc);
 
     await doc.save();
-    // Only drop the old file once the new record is safely persisted.
-    if (req.file && previous) await removeFile(previous);
+    // Only drop the old files once the new record is safely persisted.
+    for (const storedName of replaced) await removeFile(storedName);
     res.json(doc.toJSON());
+  }),
+);
+
+/**
+ * POST /api/applications/:id/package - the whole point of the automation.
+ *
+ * The Chrome extension hands over the `Resume_Package_<Candidate>.zip` ChatGPT
+ * produced, either as an uploaded file (`package`) or, when the browser could
+ * not read the signed download cross-origin, as a `packageUrl` for this server
+ * to fetch. Either way it is unzipped, `resume_content.json` is poured into the
+ * profile's template by resume_fill.py, and the resume plus the cover letter
+ * land on the record in one shot.
+ */
+router.post(
+  '/:id/package',
+  wrap(async (req, res) => {
+    await parsePackage(req, res);
+
+    const doc = await Application.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Application not found' });
+
+    // The profile decides which template gets filled; the record's own is the
+    // default, and a body override still has to be a known profile.
+    let profileName = doc.profileName;
+    if (req.body && req.body.profileName) {
+      profileName = String(req.body.profileName).trim();
+      if (!PROFILES.includes(profileName)) {
+        throw badRequest(`profileName must be one of: ${PROFILES.join(', ')}`);
+      }
+    }
+
+    const packageUrl = req.body && req.body.packageUrl ? String(req.body.packageUrl).trim() : '';
+    const buffer = req.file ? req.file.buffer : packageUrl ? await fetchPackage(packageUrl) : null;
+    if (!buffer) throw badRequest('Send the ZIP as `package`, or a `packageUrl` to fetch it from.');
+
+    const { resume, coverLetter, warnings } = await buildFromPackage(buffer, { profileName });
+
+    const replaced = [
+      doc.resume && doc.resume.storedName,
+      coverLetter && doc.coverLetter && doc.coverLetter.storedName,
+    ].filter(Boolean);
+
+    doc.resume = resume;
+    if (coverLetter) doc.coverLetter = coverLetter;
+
+    try {
+      await doc.save();
+    } catch (err) {
+      // The record did not take them, so the files it would have pointed at are
+      // orphans - clean up rather than leaving them in uploads/.
+      await removeFile(resume.storedName);
+      if (coverLetter) await removeFile(coverLetter.storedName);
+      throw err;
+    }
+
+    for (const storedName of replaced) await removeFile(storedName);
+    res.json({ ...doc.toJSON(), warnings });
   }),
 );
 
@@ -300,7 +393,9 @@ router.delete(
   wrap(async (req, res) => {
     const doc = await Application.findByIdAndDelete(req.params.id);
     if (!doc) return res.status(404).json({ error: 'Application not found' });
-    if (doc.resume) await removeFile(doc.resume.storedName);
+    for (const field of DOCUMENTS) {
+      if (doc[field]) await removeFile(doc[field].storedName);
+    }
     res.json({ ok: true, id: req.params.id });
   }),
 );
