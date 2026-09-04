@@ -10,6 +10,48 @@ job link, and which of the three profiles it went out under — all in one table
 - **Documents:** a resume and a cover letter per application, both filed by the
   Chrome extension without a click - see [The automatic pipeline](#the-automatic-pipeline)
 
+## How to use it (the short version)
+
+**What it is:** a job-application tracker. You paste a job description, and it saves the
+job *and* the tailored resume + cover letter for it, so every bid you send is in one table.
+
+**1. Install once**
+
+```bash
+npm run setup                   # installs everything
+cp server/.env.example server/.env
+pip install python-docx         # only needed for the automatic resume filler
+```
+
+You also need MongoDB running locally (`mongod` on the default port).
+
+**2. Start it**
+
+```bash
+npm run dev
+```
+
+Open <http://127.0.0.1:5173>.
+
+**3. Use it, either way**
+
+- **By hand** - click **Add application**, pick a profile, type the job title and company,
+  and drop in the resume / cover letter files if you have them. Done.
+- **Automatically** - load `Chatgpt Extension/` in Chrome (`chrome://extensions` →
+  Developer mode → *Load unpacked*), open the panel on a job posting, and paste the job
+  description. It files the application, asks ChatGPT to write the content, builds the
+  resume from your template, and attaches both documents to the record for you.
+
+**4. Look at it**
+
+- **Applications** - the table: search, filter by profile or status, edit, download files.
+- **Analytics** - how many bids, how many replies, which profile is doing best.
+- **Ctrl+Shift+X** - select any company name anywhere and press it to see what you've
+  already sent that company. (Works everywhere in Windows once you run
+  `python desktop/peek.py`.)
+
+Everything below is the detailed version.
+
 ## Profiles
 
 The roster is fixed in [`server/src/config.js`](server/src/config.js):
