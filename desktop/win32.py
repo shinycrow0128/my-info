@@ -11,6 +11,7 @@ from ctypes import wintypes
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -31,10 +32,14 @@ VK_1 = 0x31
 VK_2 = 0x32
 VK_3 = 0x33
 VK_4 = 0x34
+VK_5 = 0x35
+VK_6 = 0x36
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 CF_UNICODETEXT = 13
+# A file copied in Explorer arrives as a drop list, never as text.
+CF_HDROP = 15
 GMEM_MOVEABLE = 0x0002
 MONITOR_DEFAULTTONEAREST = 2
 
@@ -99,6 +104,13 @@ kernel32.GlobalLock.restype = wintypes.LPVOID
 kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
 kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+shell32.DragQueryFileW.restype = wintypes.UINT
+shell32.DragQueryFileW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.UINT,
+    wintypes.LPWSTR,
+    wintypes.UINT,
+]
 
 
 def set_dpi_awareness():
@@ -173,20 +185,38 @@ def set_clipboard_text(text):
         user32.CloseClipboard()
 
 
-def copy_selection(timeout=0.7, hotkey_vk=VK_X):
-    """Ctrl+C the foreground app's selection and hand back the text.
+def get_clipboard_files():
+    """The clipboard's file drop list - full paths, in the order they were copied.
 
-    `hotkey_vk` is the non-modifier key of the hotkey that fired; it is still
-    physically down, as are its modifiers, and Ctrl+Shift+C or Ctrl+Alt+C mean
-    something else entirely in most editors.
-
-    Returns None when nothing was selected - detected by the clipboard sequence
-    number never moving, which also keeps a stale clipboard from being mistaken
-    for a fresh selection.
+    Explorer does not put a copied file on the clipboard as text: it publishes
+    CF_HDROP, a list of paths, which is why reading the clipboard as text after
+    copying a file comes back empty. Returns [] when the clipboard holds no files.
     """
-    before_seq = user32.GetClipboardSequenceNumber()
-    previous = get_clipboard_text()
+    if not _open_clipboard():
+        return []
+    try:
+        if not user32.IsClipboardFormatAvailable(CF_HDROP):
+            return []
+        handle = user32.GetClipboardData(CF_HDROP)
+        if not handle:
+            return []
+        # Index 0xFFFFFFFF asks how many files there are rather than for one path.
+        count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+        paths = []
+        for index in range(count):
+            # The first call sizes the path, the second fills it: the returned
+            # length excludes the terminator, so the buffer is one wider.
+            length = shell32.DragQueryFileW(handle, index, None, 0)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            if shell32.DragQueryFileW(handle, index, buffer, length + 1):
+                paths.append(buffer.value)
+        return paths
+    finally:
+        user32.CloseClipboard()
 
+
+def _press_copy(hotkey_vk):
+    """Let go of the hotkey the user is holding, then send a clean Ctrl+C."""
     _send(_key(hotkey_vk, True), _key(VK_SHIFT, True), _key(VK_LWIN, True), _key(VK_RWIN, True))
     time.sleep(0.04)
     # Ctrl goes down before Alt comes up: the capture hotkeys are Alt+digit, and a
@@ -194,13 +224,54 @@ def copy_selection(timeout=0.7, hotkey_vk=VK_X):
     _send(_key(VK_CONTROL, False), _key(VK_MENU, True))
     _send(_key(VK_C, False), _key(VK_C, True), _key(VK_CONTROL, True))
 
+
+def _await_clipboard(before_seq, read, timeout):
+    """Wait for the copy to land, then read it. None if the clipboard never moved.
+
+    Watching the sequence number is what tells an empty selection apart from a
+    successful copy, and keeps a stale clipboard from being read as a fresh one.
+    """
     deadline = time.time() + timeout
-    text = None
     while time.time() < deadline:
         time.sleep(0.03)
         if user32.GetClipboardSequenceNumber() != before_seq:
-            text = get_clipboard_text()
-            break
+            return read()
+    return None
+
+
+def copy_selection_files(timeout=0.7, hotkey_vk=VK_X):
+    """Ctrl+C the foreground app's selection and hand back the file paths.
+
+    For Explorer, where the selection is a file rather than text. The copy is
+    left on the clipboard, so the file can still be pasted into a folder.
+
+    Returns [] when nothing was selected, or when the selection was not files.
+    """
+    before_seq = user32.GetClipboardSequenceNumber()
+    _press_copy(hotkey_vk)
+    return _await_clipboard(before_seq, get_clipboard_files, timeout) or []
+
+
+def copy_selection(timeout=0.7, hotkey_vk=VK_X, keep_clipboard=False):
+    """Ctrl+C the foreground app's selection and hand back the text.
+
+    `hotkey_vk` is the non-modifier key of the hotkey that fired; it is still
+    physically down, as are its modifiers, and Ctrl+Shift+C or Ctrl+Alt+C mean
+    something else entirely in most editors.
+
+    `keep_clipboard` leaves the copied selection on the clipboard instead of
+    putting back what was there before, so the capture hotkeys double as a plain
+    copy and the text can be pasted elsewhere.
+
+    Returns None when nothing was selected - detected by the clipboard sequence
+    number never moving, which also keeps a stale clipboard from being mistaken
+    for a fresh selection.
+    """
+    before_seq = user32.GetClipboardSequenceNumber()
+    previous = None if keep_clipboard else get_clipboard_text()
+
+    _press_copy(hotkey_vk)
+    text = _await_clipboard(before_seq, get_clipboard_text, timeout)
 
     if previous is not None and text is not None:
         time.sleep(0.03)

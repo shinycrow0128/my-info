@@ -6,17 +6,21 @@ status it is at. Reads MongoDB directly, so the API does not need to be running.
 
 The same panel doubles as a scratchpad for a job you are reading: select text and
 press Alt+1 to keep it as the job description, Alt+2 the job link, Alt+3 the job
-title, Alt+4 the company. Alt+0 shows what has been collected so far.
+title, Alt+4 the company, Alt+5 the resume and Alt+6 the cover letter - those two
+picked out in File Explorer. Alt+0 shows what has been collected so far. A capture
+also leaves the selection on the clipboard, ready to paste.
 
     python desktop/peek.py                 start listening for the hotkeys
     python desktop/peek.py --query Acme    one-off lookup printed to stdout
 """
 
 import argparse
+import os
 import queue
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 import traceback
 
 from lookup import Lookup
@@ -29,8 +33,11 @@ from win32 import (
     VK_2,
     VK_3,
     VK_4,
+    VK_5,
+    VK_6,
     VK_X,
     copy_selection,
+    copy_selection_files,
     cursor_position,
     hotkey_loop,
     set_dpi_awareness,
@@ -46,24 +53,33 @@ AUTO_HIDE_MS = 5000
 # it holds it open, so there is still a way to read a long description.
 DRAFT_HIDE_MS = 1000
 
-# key, label, virtual key, the combo as the user sees it, keeps line breaks
+# key, label, virtual key, the combo as the user sees it, keeps line breaks,
+# is a file rather than text
 CAPTURE_FIELDS = [
-    ("description", "Job description", VK_1, "Alt+1", True),
-    ("link", "Job link", VK_2, "Alt+2", False),
-    ("title", "Job title", VK_3, "Alt+3", False),
-    ("company", "Company", VK_4, "Alt+4", False),
+    ("description", "Job description", VK_1, "Alt+1", True, False),
+    ("link", "Job link", VK_2, "Alt+2", False, False),
+    ("title", "Job title", VK_3, "Alt+3", False, False),
+    ("company", "Company", VK_4, "Alt+4", False, False),
+    ("resume", "Resume file", VK_5, "Alt+5", False, True),
+    ("coverLetter", "Cover letter file", VK_6, "Alt+6", False, True),
 ]
+# What the server's upload filter accepts for either document; checked at capture
+# time so a wrong file is caught while it is still in front of you, not at
+# submission.
+DOCUMENT_EXTENSIONS = (".docx", ".doc", ".pdf")
 FIELDS_BY_KEY = {field[0]: field for field in CAPTURE_FIELDS}
-DRAFT_HINT = "Alt+1-4 capture   ·   Alt+0 show"
+DRAFT_HINT = "Alt+1-6 capture   ·   Alt+0 show"
 
 # Hotkey ids: the lookup, the draft panel, then one per capture field.
 HOTKEY_PEEK = 1
 HOTKEY_DRAFT = 2
 HOTKEY_FIELD_BASE = 10
 
-# A whole job description is worth keeping; the panel shows the first slice of it.
+# A whole job description is worth keeping; the panel shows one line of it, so all
+# the fields stay on screen together and none of them has to be scrolled to.
 MAX_VALUE = 8000
-VALUE_PREVIEW = 420
+# A cheap cut before the pixel-accurate fit - no single line can outgrow this.
+VALUE_PREVIEW = 400
 
 BG = "#171a21"
 BG_ALT = "#1e222b"
@@ -83,6 +99,8 @@ STATUS_COLORS = {
 }
 
 PANEL_WIDTH = 380
+# The width a row's text has once the panel's own padding is taken off.
+VALUE_WIDTH = PANEL_WIDTH - 34
 LIST_MAX_HEIGHT = 260
 FONT = "Segoe UI"
 
@@ -114,15 +132,11 @@ def clean_value(raw, multiline=False):
     return "\n".join(lines)[:MAX_VALUE]
 
 
-def preview_value(value):
-    """What fits in the panel, cut on a word boundary where there is one."""
-    if len(value) <= VALUE_PREVIEW:
-        return value
-    cut = value[:VALUE_PREVIEW]
-    space = cut.rfind(" ")
-    if space > VALUE_PREVIEW - 60:
-        cut = cut[:space]
-    return cut.rstrip() + " …"
+def single_line(value):
+    """The value flattened onto one line: line breaks and runs of space collapsed."""
+    if not value:
+        return ""
+    return " ".join(value.split())[:VALUE_PREVIEW]
 
 
 def format_date(value):
@@ -151,6 +165,10 @@ class Peek:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("Company Peek")
+
+        # Measured, not guessed: the draft rows are cut to the pixel width they have.
+        self.value_font = tkfont.Font(family=FONT, size=9)
+        self.empty_font = tkfont.Font(family=FONT, size=9, slant="italic")
 
         self.panel = tk.Toplevel(self.root, bg=BORDER)
         self.panel.withdraw()
@@ -268,10 +286,27 @@ class Peek:
 
         tk.Frame(self.rows, bg=BORDER, height=1).pack(fill="x", pady=(8, 0))
 
+    def _ellipsize(self, text, font):
+        """Cut text to one row's width, measured in the font it will be drawn in."""
+        if font.measure(text) <= VALUE_WIDTH:
+            return text
+        tail = " …"
+        budget = VALUE_WIDTH - font.measure(tail)
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if font.measure(text[:mid]) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low].rstrip() + tail
+
     def _add_field(self, field, highlight=False):
-        """One captured value: its label, its hotkey, and what is in it."""
-        key, label, _vk, combo, _multiline = field
+        """One captured value: its label, its hotkey, and one line of what is in it."""
+        key, label, _vk, combo, _multiline, is_file = field
         value = self.draft.get(key, "")
+        # A path is mostly folders: the file name is the part that identifies it.
+        value = os.path.basename(value) if is_file else single_line(value)
 
         row = tk.Frame(self.rows, bg=BG)
         row.pack(fill="x", padx=12, pady=(8, 0))
@@ -288,15 +323,17 @@ class Peek:
         ).pack(side="left")
         tk.Label(head, text=combo, bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="right")
 
+        font = self.value_font if value else self.empty_font
+        # One line, always: a long description must not push the other three fields
+        # off the panel and behind the scrollbar.
         tk.Label(
             row,
-            text=preview_value(value) if value else "nothing captured yet",
+            text=self._ellipsize(value or "nothing captured yet", font),
             bg=BG,
             fg=TEXT if value else MUTED,
-            font=(FONT, 9) if value else (FONT, 9, "italic"),
+            font=font,
             anchor="w",
             justify="left",
-            wraplength=PANEL_WIDTH - 34,
         ).pack(fill="x", pady=(3, 0))
 
         tk.Frame(self.rows, bg=BORDER, height=1).pack(fill="x", pady=(8, 0))
@@ -416,8 +453,8 @@ class Peek:
 
         self.foot.config(text=DRAFT_HINT)
         self.rows.update_idletasks()
-        # No cap and so no scrolling: four fields is a bounded amount of text, and
-        # a list you have to scroll is unreadable behind a one-second timer.
+        # No cap and so no scrolling: a handful of one-line fields is a fixed height,
+        # and a list you have to scroll is unreadable behind a one-second timer.
         self.canvas.configure(height=self.rows.winfo_reqheight())
         self.canvas.yview_moveto(0)
         self._show(delay=DRAFT_HIDE_MS)
@@ -434,15 +471,27 @@ class Peek:
 
         field = self.hotkey_fields.get(hotkey_id)
         try:
-            text = copy_selection(hotkey_vk=VK_X if field is None else field[2])
+            if field is not None and field[5]:
+                # Explorer's copy is a drop list, so the path is read from that
+                # rather than from the clipboard's (empty) text.
+                paths = copy_selection_files(hotkey_vk=field[2])
+                value = paths[0] if paths else ""
+            else:
+                # A capture leaves the selection on the clipboard: the hotkeys
+                # double as a copy, so one keystroke files it and lets you paste it.
+                text = copy_selection(
+                    hotkey_vk=VK_X if field is None else field[2],
+                    keep_clipboard=field is not None,
+                )
+                value = text if field is None else clean_value(text, field[4])
         except Exception as err:  # noqa: BLE001 - never kill the hotkey thread
             self.events.put(("error", anchor, None, str(err)))
             return
 
         if field is None:
-            self.events.put(("term", anchor, clean_term(text), None))
+            self.events.put(("term", anchor, clean_term(value), None))
         else:
-            self.events.put(("capture", anchor, field[0], clean_value(text, field[4])))
+            self.events.put(("capture", anchor, field[0], value))
 
     def _query(self, request_id, term):
         try:
@@ -471,13 +520,9 @@ class Peek:
             # Any lookup still in flight must not paint over the draft panel.
             self.request_id += 1
             field = FIELDS_BY_KEY[payload]
-            if not extra:
-                self.show_message(
-                    "",
-                    f"No text selected. Highlight the {field[1].lower()}, then press {field[3]}.",
-                    foot=DRAFT_HINT,
-                    delay=DRAFT_HIDE_MS,
-                )
+            problem = self._rejects(field, extra)
+            if problem:
+                self.show_message("", problem, foot=DRAFT_HINT, delay=DRAFT_HIDE_MS)
             else:
                 self.draft[payload] = extra
                 self.show_draft(saved=payload)
@@ -493,6 +538,22 @@ class Peek:
             self.show_result(extra)
         elif kind == "failed" and payload == self.request_id:
             self.show_message(self.term_label.cget("text"), extra, DANGER)
+
+    @staticmethod
+    def _rejects(field, value):
+        """Why this capture cannot be kept, or None when it can."""
+        label, combo, is_file = field[1].lower(), field[3], field[5]
+        if not value:
+            if is_file:
+                return f"No file selected. Click the {label} in File Explorer, then press {combo}."
+            return f"No text selected. Highlight the {label}, then press {combo}."
+        if is_file:
+            if not os.path.isfile(value):
+                return f"{os.path.basename(value)} is not a file that can be read."
+            if not value.lower().endswith(DOCUMENT_EXTENSIONS):
+                accepted = ", ".join(DOCUMENT_EXTENSIONS)
+                return f"{os.path.basename(value)} is not one of {accepted}."
+        return None
 
     def _pump(self):
         try:
