@@ -192,8 +192,8 @@ the API or the web app running at all. See [Desktop company peek](#desktop-compa
 | -------- | ------------------------------ | ------------------------------------------------------------ |
 | `GET`    | `/api/health`                  | Liveness plus DB connection state                             |
 | `GET`    | `/api/meta`                    | Profile names and statuses                                    |
-| `GET`    | `/api/applications`            | `page`, `limit`, `q`, `profileName`, `status`, `sortBy`, `sortDir` |
-| `GET`    | `/api/applications/stats`      | Totals grouped by profile and status                          |
+| `GET`    | `/api/applications`            | `page`, `limit`, `q`, `profileName`, `status`, `from`, `to`, `sortBy`, `sortDir` |
+| `GET`    | `/api/applications/stats`      | Totals grouped by profile and status; takes the same `from`/`to` |
 | `GET`    | `/api/applications/company-lookup` | `q` (2+ chars), `limit`; companies matching the selected text |
 | `GET`    | `/api/analytics`               | `days` = `7` \| `30` \| `90` \| `365` \| `all` (default `30`)   |
 | `GET`    | `/api/applications/:id`        | Single record                                                 |
@@ -203,6 +203,13 @@ the API or the web app running at all. See [Desktop company peek](#desktop-compa
 | `POST`   | `/api/applications/:id/package` | The generator ZIP, as file field `package` or as `packageUrl` for the server to fetch. Unzips it, fills the profile's template through `resume_fill.py`, and attaches both documents |
 | `PUT`    | `/api/applications/:id`        | Partial update; send either file again to replace it          |
 | `DELETE` | `/api/applications/:id`        | Removes the record and both files                             |
+
+`from` and `to` are inclusive `YYYY-MM-DD` calendar days matched against `appliedAt`.
+Either may stand alone for an open-ended window, and `from=to` is a single day.
+`appliedAt` is stored on a UTC day boundary and the UI renders it in UTC, so the
+window is evaluated in UTC as well - a bid always lands in the day the table prints
+for it. The applications table opens on today's window; the picker above it switches
+to yesterday, 7 or 30 days, this month, all time, or a custom range.
 
 `profileName` and `jobTitle` are required on create; `profileName` and `status` are validated
 against the fixed lists. Uploads are limited to `.docx`, `.doc` and `.pdf`.

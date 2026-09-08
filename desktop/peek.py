@@ -4,7 +4,11 @@ A borderless panel opens at the mouse pointer listing every application filed
 under a matching company: the profile it went out under, the job title and the
 status it is at. Reads MongoDB directly, so the API does not need to be running.
 
-    python desktop/peek.py                 start listening for the hotkey
+The same panel doubles as a scratchpad for a job you are reading: select text and
+press Alt+1 to keep it as the job description, Alt+2 the job link, Alt+3 the job
+title, Alt+4 the company. Alt+0 shows what has been collected so far.
+
+    python desktop/peek.py                 start listening for the hotkeys
     python desktop/peek.py --query Acme    one-off lookup printed to stdout
 """
 
@@ -17,8 +21,14 @@ import traceback
 
 from lookup import Lookup
 from win32 import (
+    MOD_ALT,
     MOD_CONTROL,
     MOD_SHIFT,
+    VK_0,
+    VK_1,
+    VK_2,
+    VK_3,
+    VK_4,
     VK_X,
     copy_selection,
     cursor_position,
@@ -32,6 +42,28 @@ MAX_TERM = 80
 RESULT_LIMIT = 25
 # The panel closes itself this long after the answer lands.
 AUTO_HIDE_MS = 5000
+# The draft panel is a confirmation, not a document: it flashes and goes. Hovering
+# it holds it open, so there is still a way to read a long description.
+DRAFT_HIDE_MS = 1000
+
+# key, label, virtual key, the combo as the user sees it, keeps line breaks
+CAPTURE_FIELDS = [
+    ("description", "Job description", VK_1, "Alt+1", True),
+    ("link", "Job link", VK_2, "Alt+2", False),
+    ("title", "Job title", VK_3, "Alt+3", False),
+    ("company", "Company", VK_4, "Alt+4", False),
+]
+FIELDS_BY_KEY = {field[0]: field for field in CAPTURE_FIELDS}
+DRAFT_HINT = "Alt+1-4 capture   ·   Alt+0 show"
+
+# Hotkey ids: the lookup, the draft panel, then one per capture field.
+HOTKEY_PEEK = 1
+HOTKEY_DRAFT = 2
+HOTKEY_FIELD_BASE = 10
+
+# A whole job description is worth keeping; the panel shows the first slice of it.
+MAX_VALUE = 8000
+VALUE_PREVIEW = 420
 
 BG = "#171a21"
 BG_ALT = "#1e222b"
@@ -39,6 +71,7 @@ BORDER = "#2a2f3a"
 TEXT = "#e7eaf0"
 MUTED = "#9aa3b2"
 DANGER = "#ff6b6b"
+ACCENT = "#93b2ff"
 
 # Same status colours as the web app, flattened onto the panel background
 # because Tk has no per-widget alpha.
@@ -61,6 +94,37 @@ def clean_term(raw):
     return " ".join(raw.strip().splitlines()[0].split())[:MAX_TERM]
 
 
+def clean_value(raw, multiline=False):
+    """The selection as it should be stored: trimmed, capped, blank runs collapsed.
+
+    A job description keeps its line breaks - it is prose, and paragraph shape is
+    most of what makes it readable. Everything else is a single line.
+    """
+    if not raw or not raw.strip():
+        return ""
+    if not multiline:
+        return " ".join(raw.strip().splitlines()[0].split())[:MAX_VALUE]
+
+    lines = []
+    for line in raw.strip().splitlines():
+        line = " ".join(line.split())
+        # One blank line between paragraphs, however many the source had.
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    return "\n".join(lines)[:MAX_VALUE]
+
+
+def preview_value(value):
+    """What fits in the panel, cut on a word boundary where there is one."""
+    if len(value) <= VALUE_PREVIEW:
+        return value
+    cut = value[:VALUE_PREVIEW]
+    space = cut.rfind(" ")
+    if space > VALUE_PREVIEW - 60:
+        cut = cut[:space]
+    return cut.rstrip() + " …"
+
+
 def format_date(value):
     if not value:
         return ""
@@ -77,6 +141,12 @@ class Peek:
         self.request_id = 0
         self.anchor = (0, 0)
         self._hide_job = None
+        self._hide_delay = AUTO_HIDE_MS
+        # Captured field values, held for the life of the process.
+        self.draft = {}
+        self.hotkey_fields = {
+            HOTKEY_FIELD_BASE + index: field for index, field in enumerate(CAPTURE_FIELDS)
+        }
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -89,7 +159,7 @@ class Peek:
         self.panel.bind("<Escape>", lambda _e: self.hide())
         # Deliberately no <FocusOut> close: the app the text was selected in often
         # takes focus straight back, which would tear the panel down in milliseconds.
-        # The 5s timer, Escape and the close button are the ways out.
+        # The auto-hide timer, Escape and the close button are the ways out.
 
         # One pixel of BORDER shows around the frame as the panel's outline.
         self.body = tk.Frame(self.panel, bg=BG)
@@ -198,6 +268,39 @@ class Peek:
 
         tk.Frame(self.rows, bg=BORDER, height=1).pack(fill="x", pady=(8, 0))
 
+    def _add_field(self, field, highlight=False):
+        """One captured value: its label, its hotkey, and what is in it."""
+        key, label, _vk, combo, _multiline = field
+        value = self.draft.get(key, "")
+
+        row = tk.Frame(self.rows, bg=BG)
+        row.pack(fill="x", padx=12, pady=(8, 0))
+
+        head = tk.Frame(row, bg=BG)
+        head.pack(fill="x")
+        tk.Label(
+            head,
+            text=label,
+            bg=BG,
+            # The field just captured is picked out so the panel confirms the hotkey.
+            fg=ACCENT if highlight else MUTED,
+            font=(FONT, 8, "bold"),
+        ).pack(side="left")
+        tk.Label(head, text=combo, bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="right")
+
+        tk.Label(
+            row,
+            text=preview_value(value) if value else "nothing captured yet",
+            bg=BG,
+            fg=TEXT if value else MUTED,
+            font=(FONT, 9) if value else (FONT, 9, "italic"),
+            anchor="w",
+            justify="left",
+            wraplength=PANEL_WIDTH - 34,
+        ).pack(fill="x", pady=(3, 0))
+
+        tk.Frame(self.rows, bg=BORDER, height=1).pack(fill="x", pady=(8, 0))
+
     # ---------- showing ----------
 
     def _place(self):
@@ -213,7 +316,7 @@ class Peek:
             py = max(top + 8, y - height - 12)
         self.panel.geometry(f"{PANEL_WIDTH}x{height}+{int(px)}+{int(py)}")
 
-    def _show(self, auto_hide=True):
+    def _show(self, auto_hide=True, delay=AUTO_HIDE_MS):
         self._place()
         self.panel.deiconify()
         self.panel.lift()
@@ -222,7 +325,8 @@ class Peek:
         # No countdown while the answer is still on its way - it starts when
         # there is something to read.
         if auto_hide:
-            self._hide_job = self.root.after(AUTO_HIDE_MS, self._auto_hide)
+            self._hide_delay = delay
+            self._hide_job = self.root.after(delay, self._auto_hide)
 
     def _cancel_auto_hide(self):
         if self._hide_job is not None:
@@ -238,7 +342,7 @@ class Peek:
         self._hide_job = None
         # Reading the list keeps it open; the timer restarts once you move off.
         if self._pointer_inside():
-            self._hide_job = self.root.after(AUTO_HIDE_MS, self._auto_hide)
+            self._hide_job = self.root.after(self._hide_delay, self._auto_hide)
             return
         self.hide()
 
@@ -247,15 +351,17 @@ class Peek:
         self.request_id += 1
         self.panel.withdraw()
 
-    def show_message(self, term, message, color=MUTED, auto_hide=True):
+    def show_message(
+        self, term, message, color=MUTED, auto_hide=True, foot=HOTKEY_LABEL, delay=AUTO_HIDE_MS
+    ):
         self._clear()
         self.term_label.config(text=term or "Company Peek")
         self.count_label.config(text="")
-        self.foot.config(text=HOTKEY_LABEL)
+        self.foot.config(text=foot)
         self._note(message, color)
         self.rows.update_idletasks()
         self.canvas.configure(height=self.rows.winfo_reqheight())
-        self._show(auto_hide)
+        self._show(auto_hide, delay)
 
     @staticmethod
     def _spread(data):
@@ -298,17 +404,45 @@ class Peek:
         self.canvas.yview_moveto(0)
         self._show()
 
+    def show_draft(self, saved=None):
+        """Everything captured so far, in the order the hotkeys are numbered."""
+        self._clear()
+        self.term_label.config(text="Job draft")
+        filled = sum(1 for field in CAPTURE_FIELDS if self.draft.get(field[0]))
+        self.count_label.config(text=f"{filled} of {len(CAPTURE_FIELDS)} fields captured")
+
+        for field in CAPTURE_FIELDS:
+            self._add_field(field, highlight=field[0] == saved)
+
+        self.foot.config(text=DRAFT_HINT)
+        self.rows.update_idletasks()
+        # No cap and so no scrolling: four fields is a bounded amount of text, and
+        # a list you have to scroll is unreadable behind a one-second timer.
+        self.canvas.configure(height=self.rows.winfo_reqheight())
+        self.canvas.yview_moveto(0)
+        self._show(delay=DRAFT_HIDE_MS)
+
     # ---------- wiring ----------
 
-    def on_hotkey(self):
+    def on_hotkey(self, hotkey_id):
         """Runs on the hotkey thread: grab the selection, hand it to the UI."""
         anchor = cursor_position()
+        # Alt+0 reads back what is already held - nothing to copy out of the app.
+        if hotkey_id == HOTKEY_DRAFT:
+            self.events.put(("draft", anchor, None, None))
+            return
+
+        field = self.hotkey_fields.get(hotkey_id)
         try:
-            text = copy_selection()
+            text = copy_selection(hotkey_vk=VK_X if field is None else field[2])
         except Exception as err:  # noqa: BLE001 - never kill the hotkey thread
             self.events.put(("error", anchor, None, str(err)))
             return
-        self.events.put(("term", anchor, clean_term(text), None))
+
+        if field is None:
+            self.events.put(("term", anchor, clean_term(text), None))
+        else:
+            self.events.put(("capture", anchor, field[0], clean_value(text, field[4])))
 
     def _query(self, request_id, term):
         try:
@@ -332,6 +466,25 @@ class Peek:
                 threading.Thread(
                     target=self._query, args=(self.request_id, payload), daemon=True
                 ).start()
+        elif kind == "capture":
+            self.anchor = anchor
+            # Any lookup still in flight must not paint over the draft panel.
+            self.request_id += 1
+            field = FIELDS_BY_KEY[payload]
+            if not extra:
+                self.show_message(
+                    "",
+                    f"No text selected. Highlight the {field[1].lower()}, then press {field[3]}.",
+                    foot=DRAFT_HINT,
+                    delay=DRAFT_HIDE_MS,
+                )
+            else:
+                self.draft[payload] = extra
+                self.show_draft(saved=payload)
+        elif kind == "draft":
+            self.anchor = anchor
+            self.request_id += 1
+            self.show_draft()
         elif kind == "error":
             self.anchor = anchor
             self.show_message("", extra, DANGER)
@@ -353,9 +506,26 @@ class Peek:
     def run(self):
         self.anchor = cursor_position()
 
+        bindings = [
+            (HOTKEY_PEEK, MOD_CONTROL | MOD_SHIFT, VK_X),
+            (HOTKEY_DRAFT, MOD_ALT, VK_0),
+        ] + [
+            (HOTKEY_FIELD_BASE + index, MOD_ALT, field[2])
+            for index, field in enumerate(CAPTURE_FIELDS)
+        ]
+        labels = {HOTKEY_PEEK: HOTKEY_LABEL, HOTKEY_DRAFT: "Alt+0"}
+        labels.update({key: field[3] for key, field in self.hotkey_fields.items()})
+
+        def unavailable(hotkey_id, error):
+            print(
+                f"[peek] {labels.get(hotkey_id, hotkey_id)} is unavailable "
+                f"(error {error}); another application owns it.",
+                file=sys.stderr,
+            )
+
         def listen():
             try:
-                hotkey_loop(self.on_hotkey, MOD_CONTROL | MOD_SHIFT, VK_X)
+                hotkey_loop(bindings, self.on_hotkey, unavailable)
             except OSError as err:
                 print(f"[peek] {err}", file=sys.stderr)
 
@@ -363,6 +533,9 @@ class Peek:
         self.root.after(60, self._pump)
         print(f"[peek] watching for {HOTKEY_LABEL}  (database: {self.lookup.db_name})")
         print("[peek] select a company name in any window, then press the hotkey.")
+        for field in CAPTURE_FIELDS:
+            print(f"[peek] {field[3]}  capture the selection as the {field[1].lower()}")
+        print("[peek] Alt+0  show what has been captured")
         print("[peek] Ctrl+C here to quit.")
         try:
             self.root.mainloop()

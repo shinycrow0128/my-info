@@ -157,6 +157,14 @@ h1 {
   color: var(--muted);
 }
 
+/* Header actions - the period picker sits next to "Add application" */
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;
@@ -167,6 +175,25 @@ h1 {
 
 .toolbar .search {
   flex: 1 1 320px;
+}
+
+/* The two date fields the Custom period reveals */
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.date-range label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.date-range input[type='date'] {
+  color-scheme: dark;
 }
 
 input,
@@ -263,6 +290,24 @@ input[type='file'] {
 
 .table a:hover {
   text-decoration: underline;
+}
+
+/*
+ * Job link column, held to 50px. `width` alone is only a hint under the auto
+ * layout this table uses, so max-width pins it and the padding is trimmed to
+ * leave room for the arrow - the hostname would never have fit, so it moved to
+ * the link's tooltip.
+ */
+.table th.col-link,
+.table td.col-link {
+  width: 50px;
+  max-width: 50px;
+  padding-left: 8px;
+  padding-right: 8px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .strong {

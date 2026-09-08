@@ -1,11 +1,12 @@
 import { Fragment, useRef, useState } from 'react';
 import { coverLetterUrl, resumeUrl, updateApplication } from '../lib/api.js';
+import { formatDay } from '../lib/periods.js';
 
 const COLUMNS = [
   { key: 'profileName', label: 'Profile', sortable: true },
   { key: 'jobTitle', label: 'Job title', sortable: true },
   { key: 'company', label: 'Company', sortable: true },
-  { key: 'jobLink', label: 'Job link', sortable: false },
+  { key: 'jobLink', label: 'Link', sortable: false, className: 'col-link' },
   { key: 'jobDescription', label: 'Description', sortable: false },
   { key: 'resume', label: 'Resume', sortable: false },
   { key: 'coverLetter', label: 'Cover letter', sortable: false },
@@ -13,21 +14,6 @@ const COLUMNS = [
   { key: 'appliedAt', label: 'Applied', sortable: true },
   { key: 'actions', label: '', sortable: false },
 ];
-
-// appliedAt is a calendar date stored as UTC midnight, so it has to be rendered in UTC.
-// Formatting it in local time shows the previous day for anyone behind UTC.
-function formatDate(value) {
-  if (!value) return '—';
-  const d = new Date(value);
-  return Number.isNaN(d.getTime())
-    ? '—'
-    : d.toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        timeZone: 'UTC',
-      });
-}
 
 function formatSize(bytes) {
   if (!bytes) return '';
@@ -112,6 +98,10 @@ export default function ApplicationTable({
   onEdit,
   onDelete,
   onChanged,
+  // An empty table usually means the active period holds nothing, not that the
+  // tracker is empty - the page passes wording that says which.
+  emptyTitle = 'No applications yet.',
+  emptyHint = 'Add one with the button above and it will show up in this table.',
 }) {
   const [expanded, setExpanded] = useState(null);
 
@@ -122,8 +112,8 @@ export default function ApplicationTable({
   if (!loading && items.length === 0) {
     return (
       <div className="empty">
-        <p>No applications yet.</p>
-        <p className="muted">Add one with the button above and it will show up in this table.</p>
+        <p>{emptyTitle}</p>
+        <p className="muted">{emptyHint}</p>
       </div>
     );
   }
@@ -136,7 +126,7 @@ export default function ApplicationTable({
             {COLUMNS.map((col) => (
               <th
                 key={col.key}
-                className={col.sortable ? 'sortable' : undefined}
+                className={[col.sortable ? 'sortable' : '', col.className || ''].join(' ').trim() || undefined}
                 onClick={col.sortable ? () => onSort(col.key) : undefined}
                 aria-sort={
                   sortBy === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
@@ -161,10 +151,16 @@ export default function ApplicationTable({
                   </td>
                   <td className="strong">{row.jobTitle}</td>
                   <td>{row.company || '—'}</td>
-                  <td>
+                  {/* 50px lane: only the arrow fits, so the host lives in the tooltip. */}
+                  <td className="col-link">
                     {row.jobLink ? (
-                      <a href={row.jobLink} target="_blank" rel="noreferrer noopener">
-                        {hostOf(row.jobLink)} ↗
+                      <a
+                        href={row.jobLink}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        title={hostOf(row.jobLink)}
+                      >
+                        ↗
                       </a>
                     ) : (
                       '—'
@@ -200,7 +196,7 @@ export default function ApplicationTable({
                   <td>
                     <span className={`status status-${row.status}`}>{row.status}</span>
                   </td>
-                  <td className="nowrap">{formatDate(row.appliedAt)}</td>
+                  <td className="nowrap">{formatDay(row.appliedAt)}</td>
                   <td className="nowrap actions">
                     <button type="button" className="link-btn" onClick={() => onEdit(row)}>
                       Edit

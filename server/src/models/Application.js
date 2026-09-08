@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { PROFILES, STATUSES } from '../config.js';
+import { startOfToday } from '../calendarDay.js';
 
 // One stored document - the resume and the cover letter are the same shape, so
 // they share a schema rather than drifting apart.
@@ -23,7 +24,9 @@ const applicationSchema = new mongoose.Schema(
     jobDescription: { type: String, default: '' },
     company: { type: String, default: '', trim: true },
     status: { type: String, enum: STATUSES, default: 'applied', index: true },
-    appliedAt: { type: Date, default: Date.now },
+    // A calendar day pinned to UTC midnight, never the instant the row was
+    // written - Date.now() here would stamp an evening bid with tomorrow's date.
+    appliedAt: { type: Date, default: startOfToday },
     notes: { type: String, default: '' },
     resume: { type: storedFileSchema, default: null },
     coverLetter: { type: storedFileSchema, default: null },

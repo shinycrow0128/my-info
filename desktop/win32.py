@@ -12,6 +12,7 @@ from ctypes import wintypes
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
@@ -24,6 +25,12 @@ VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 VK_C = 0x43
 VK_X = 0x58
+# The number row - VK_0 through VK_9 are contiguous from 0x30.
+VK_0 = 0x30
+VK_1 = 0x31
+VK_2 = 0x32
+VK_3 = 0x33
+VK_4 = 0x34
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -166,8 +173,12 @@ def set_clipboard_text(text):
         user32.CloseClipboard()
 
 
-def copy_selection(timeout=0.7):
+def copy_selection(timeout=0.7, hotkey_vk=VK_X):
     """Ctrl+C the foreground app's selection and hand back the text.
+
+    `hotkey_vk` is the non-modifier key of the hotkey that fired; it is still
+    physically down, as are its modifiers, and Ctrl+Shift+C or Ctrl+Alt+C mean
+    something else entirely in most editors.
 
     Returns None when nothing was selected - detected by the clipboard sequence
     number never moving, which also keeps a stale clipboard from being mistaken
@@ -176,11 +187,12 @@ def copy_selection(timeout=0.7):
     before_seq = user32.GetClipboardSequenceNumber()
     previous = get_clipboard_text()
 
-    # The hotkey itself is Ctrl+Shift+X, so those keys are still physically down;
-    # Ctrl+Shift+C means something else entirely in most editors.
-    _send(_key(VK_X, True), _key(VK_SHIFT, True), _key(VK_MENU, True), _key(VK_LWIN, True), _key(VK_RWIN, True))
+    _send(_key(hotkey_vk, True), _key(VK_SHIFT, True), _key(VK_LWIN, True), _key(VK_RWIN, True))
     time.sleep(0.04)
-    _send(_key(VK_CONTROL, False), _key(VK_C, False), _key(VK_C, True), _key(VK_CONTROL, True))
+    # Ctrl goes down before Alt comes up: the capture hotkeys are Alt+digit, and a
+    # lone Alt release reads as an Alt tap, which drops focus into the app's menu bar.
+    _send(_key(VK_CONTROL, False), _key(VK_MENU, True))
+    _send(_key(VK_C, False), _key(VK_C, True), _key(VK_CONTROL, True))
 
     deadline = time.time() + timeout
     text = None
@@ -214,24 +226,36 @@ def work_area(x, y):
     return r.left, r.top, r.right, r.bottom
 
 
-def hotkey_loop(on_press, modifiers=MOD_CONTROL | MOD_SHIFT, vk=VK_X, hotkey_id=1):
-    """Register the hotkey and pump messages. Runs until the thread is killed.
+def hotkey_loop(bindings, on_press, on_error=None):
+    """Register every hotkey and pump messages. Runs until the thread is killed.
+
+    `bindings` is a list of (hotkey_id, modifiers, vk); `on_press` is called with
+    the id of whichever fired. A key another application already owns is reported
+    through `on_error` and skipped, so one clash does not cost all the others.
 
     RegisterHotKey binds to the calling thread, so this owns a thread of its own
     and hands work back to the UI thread through `on_press`.
     """
-    if not user32.RegisterHotKey(None, hotkey_id, modifiers | MOD_NOREPEAT, vk):
+    registered = []
+    for hotkey_id, modifiers, vk in bindings:
+        if user32.RegisterHotKey(None, hotkey_id, modifiers | MOD_NOREPEAT, vk):
+            registered.append(hotkey_id)
+        elif on_error is not None:
+            on_error(hotkey_id, ctypes.get_last_error())
+
+    if not registered:
         raise OSError(
-            f"Could not register the hotkey (error {ctypes.get_last_error()}). "
-            "Another application probably already owns it."
+            "Could not register any hotkey. Another application probably already owns them."
         )
 
+    known = set(registered)
     message = wintypes.MSG()
     try:
         while user32.GetMessageW(ctypes.byref(message), None, 0, 0) != 0:
-            if message.message == WM_HOTKEY and message.wParam == hotkey_id:
-                on_press()
+            if message.message == WM_HOTKEY and message.wParam in known:
+                on_press(message.wParam)
             user32.TranslateMessage(ctypes.byref(message))
             user32.DispatchMessageW(ctypes.byref(message))
     finally:
-        user32.UnregisterHotKey(None, hotkey_id)
+        for hotkey_id in registered:
+            user32.UnregisterHotKey(None, hotkey_id)

@@ -5,6 +5,7 @@ import { Application } from '../models/Application.js';
 import { uploadDocuments, uploadPackage } from '../middleware/upload.js';
 import { buildFromPackage, extractDocxText, fetchPackage } from '../services/resumePackage.js';
 import { config, PROFILES, STATUSES } from '../config.js';
+import { toCalendarDay, utcMidnight } from '../calendarDay.js';
 
 export const router = express.Router();
 
@@ -57,6 +58,37 @@ function badRequest(message) {
   return err;
 }
 
+/**
+ * Turn a `YYYY-MM-DD` query value into a UTC instant. appliedAt is pinned to UTC
+ * midnight, and both the table and the analytics buckets read it back in UTC, so
+ * the window boundaries are computed in UTC too - otherwise "today" on the client
+ * and "today" in the query would drift apart by a day for anyone off UTC.
+ */
+function dayBoundary(raw, { exclusiveEnd = false } = {}) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw).trim());
+  if (!parts) throw badRequest('from and to must be YYYY-MM-DD dates');
+  const day = new Date(Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3])));
+  if (Number.isNaN(day.getTime())) throw badRequest('from and to must be YYYY-MM-DD dates');
+  // The upper bound is the start of the next day, so the whole `to` day is included.
+  if (exclusiveEnd) day.setUTCDate(day.getUTCDate() + 1);
+  return day;
+}
+
+/**
+ * The `from`/`to` period filter, as a mongo condition or null when neither is set.
+ * Both ends are optional and inclusive: `from=to=today` is exactly today's bids.
+ */
+function periodFilter({ from, to }) {
+  const range = {};
+  if (from) range.$gte = dayBoundary(from);
+  if (to) range.$lt = dayBoundary(to, { exclusiveEnd: true });
+  if (!range.$gte && !range.$lt) return null;
+  if (range.$gte && range.$lt && range.$lt <= range.$gte) {
+    throw badRequest('from must be on or before to');
+  }
+  return { appliedAt: range };
+}
+
 function readFields(body, { partial = false } = {}) {
   const out = {};
   const has = (k) => body[k] !== undefined && body[k] !== null;
@@ -94,14 +126,14 @@ function readFields(body, { partial = false } = {}) {
 
   if (has('appliedAt') && String(body.appliedAt).trim()) {
     const raw = String(body.appliedAt).trim();
-    // appliedAt is a calendar day, not an instant. Pin a YYYY-MM-DD value to UTC
-    // midnight so the day it reads back as never depends on the reader's timezone.
-    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
-    const appliedAt = dateOnly
-      ? new Date(Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])))
-      : new Date(raw);
-    if (Number.isNaN(appliedAt.getTime())) throw badRequest('appliedAt is not a valid date');
-    out.appliedAt = appliedAt;
+    // appliedAt is a calendar day, not an instant. A YYYY-MM-DD value is already
+    // the day the user meant, so it is pinned to UTC midnight as sent; a full
+    // timestamp is flattened to the day it fell on in the app timezone, so an
+    // evening bid does not get filed under tomorrow.
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+    const parsed = dateOnly ? utcMidnight(raw) : new Date(raw);
+    if (Number.isNaN(parsed.getTime())) throw badRequest('appliedAt is not a valid date');
+    out.appliedAt = dateOnly ? parsed : toCalendarDay(parsed);
   }
 
   return out;
@@ -153,6 +185,7 @@ router.get(
     const filter = {};
     if (profileName && PROFILES.includes(profileName)) filter.profileName = profileName;
     if (status && STATUSES.includes(status)) filter.status = status;
+    Object.assign(filter, periodFilter(req.query));
     if (q && String(q).trim()) {
       const escaped = escapeRegex(String(q).trim());
       const rx = new RegExp(escaped, 'i');
@@ -189,13 +222,17 @@ router.get(
 );
 
 // GET /api/applications/stats - counts per profile and per status for the dashboard.
+// Takes the same `from`/`to` period as the list, so the tiles above the table always
+// count the rows the table is actually showing.
 router.get(
   '/stats',
-  wrap(async (_req, res) => {
+  wrap(async (req, res) => {
+    const match = periodFilter(req.query) || {};
+    const scoped = (stage) => Application.aggregate([{ $match: match }, stage]);
     const [byProfile, byStatus, total] = await Promise.all([
-      Application.aggregate([{ $group: { _id: '$profileName', count: { $sum: 1 } } }]),
-      Application.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-      Application.countDocuments(),
+      scoped({ $group: { _id: '$profileName', count: { $sum: 1 } } }),
+      scoped({ $group: { _id: '$status', count: { $sum: 1 } } }),
+      Application.countDocuments(match),
     ]);
     const toMap = (rows) => Object.fromEntries(rows.map((r) => [r._id, r.count]));
     res.json({ total, byProfile: toMap(byProfile), byStatus: toMap(byStatus) });

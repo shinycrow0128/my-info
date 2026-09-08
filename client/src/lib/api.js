@@ -15,16 +15,21 @@ export function getMeta() {
   return request('/api/meta');
 }
 
-export function getStats() {
-  return request('/api/applications/stats');
-}
-
-export function listApplications(params) {
+function toQuery(params) {
   const qs = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value !== '' && value !== null && value !== undefined) qs.set(key, value);
   });
-  return request(`/api/applications?${qs.toString()}`);
+  return qs.toString();
+}
+
+// Takes the same `from`/`to` day keys as the list so the tiles count what the table shows.
+export function getStats(params) {
+  return request(`/api/applications/stats?${toQuery(params)}`);
+}
+
+export function listApplications(params) {
+  return request(`/api/applications?${toQuery(params)}`);
 }
 
 export function createApplication(formData) {

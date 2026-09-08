@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { lookupCompany } from '../lib/api.js';
+import { formatDay } from '../lib/periods.js';
 
 const PANEL_WIDTH = 360;
 // The panel closes itself this long after the answer lands.
@@ -39,14 +40,6 @@ function place(rect) {
     return { left, bottom: window.innerHeight - rect.top + GAP };
   }
   return { left, top: rect.bottom + GAP };
-}
-
-function formatDate(value) {
-  if (!value) return '';
-  const d = new Date(value);
-  return Number.isNaN(d.getTime())
-    ? ''
-    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 export default function CompanyPeek() {
@@ -209,7 +202,7 @@ export default function CompanyPeek() {
               <span className={item.exact ? 'peek-company exact' : 'peek-company'}>
                 {item.company || 'No company'}
               </span>
-              {formatDate(item.appliedAt) ? <span>· {formatDate(item.appliedAt)}</span> : null}
+              {formatDay(item.appliedAt, '') ? <span>· {formatDay(item.appliedAt, '')}</span> : null}
             </div>
           </div>
         ))}

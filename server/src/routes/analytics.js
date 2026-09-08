@@ -1,6 +1,7 @@
 import express from 'express';
 import { Application } from '../models/Application.js';
 import { PROFILES, STATUSES } from '../config.js';
+import { startOfToday } from '../calendarDay.js';
 
 export const router = express.Router();
 
@@ -10,13 +11,11 @@ function wrap(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-// appliedAt is stored as UTC midnight, so every bucket boundary is computed in UTC too.
+// appliedAt is stored as UTC midnight, so every bucket boundary is read in UTC
+// too. Where the window *starts* is a different question - startOfToday() asks
+// it in the app timezone, so the chart does not gain a day at 8pm Eastern.
 function utcDayKey(date) {
   return date.toISOString().slice(0, 10);
-}
-
-function startOfUtcDay(date) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
 function emptyCounts() {
@@ -32,7 +31,7 @@ router.get(
   '/',
   wrap(async (req, res) => {
     const days = RANGES.has(String(req.query.days)) ? String(req.query.days) : '30';
-    const today = startOfUtcDay(new Date());
+    const today = startOfToday();
 
     let from = null;
     if (days !== 'all') {

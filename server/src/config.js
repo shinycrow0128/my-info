@@ -22,6 +22,10 @@ export const config = {
   uploadDir: path.resolve(serverRoot, process.env.UPLOAD_DIR || 'uploads'),
   maxUploadBytes: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024,
 
+  // Applied dates are calendar days, so "today" has to be decided in a real
+  // timezone rather than in UTC - see calendarDay.js.
+  timezone: process.env.APP_TIMEZONE || 'America/New_York',
+
   // ZIP packages arrive whole, so they get their own (larger) ceiling.
   maxPackageBytes: Number(process.env.MAX_PACKAGE_MB || 25) * 1024 * 1024,
   templatesDir: path.resolve(serverRoot, process.env.TEMPLATES_DIR || path.join(extensionDir, 'Temp')),
