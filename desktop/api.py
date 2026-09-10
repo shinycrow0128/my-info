@@ -93,6 +93,21 @@ class Api:
         """The profile and status rosters, so the panel offers what the API accepts."""
         return _send(urllib.request.Request(f"{self.url}/api/meta"))
 
+    def update_status(self, application_id, status):
+        """PUT /api/applications/:id with nothing but the new status.
+
+        The route is a partial update, so the one field is all that travels - and
+        it goes as multipart because the same handler runs multer over the body.
+        """
+        body, content_type = _multipart({"status": status}, {})
+        request = urllib.request.Request(
+            f"{self.url}/api/applications/{urllib.parse.quote(str(application_id))}",
+            data=body,
+            method="PUT",
+            headers={"Content-Type": content_type, "Content-Length": str(len(body))},
+        )
+        return _send(request)
+
     def create_application(self, fields, files=None):
         """POST /api/applications - the same multipart the web form sends."""
         body, content_type = _multipart(fields, files or {})

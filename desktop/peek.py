@@ -3,6 +3,8 @@
 A borderless panel opens at the mouse pointer listing every application filed
 under a matching company: the profile it went out under, the job title and the
 status it is at. Reads MongoDB directly, so the API does not need to be running.
+Click a row's status chip to move that application on - applied to interview, and
+so on. That one write goes through the API, so the server has to be up for it.
 
 The same panel doubles as a scratchpad for a job you are reading: select text and
 press Alt+1 to keep it as the job description, Alt+2 the job link, Alt+3 the job
@@ -83,6 +85,7 @@ PROFILE_LOADING = "Loading profiles…"
 PROFILE_MISSING = "No profiles - is the server running?"
 FIELDS_BY_KEY = {field[0]: field for field in CAPTURE_FIELDS}
 DRAFT_HINT = "Alt+1-6 capture   ·   Alt+0 show"
+STATUS_HINT = "Click a status to change it"
 
 # Hotkey ids: the lookup, the draft panel, then one per capture field.
 HOTKEY_PEEK = 1
@@ -176,7 +179,17 @@ class Peek:
         self.api = Api()
         # The server's roster, fetched rather than copied: config.js owns it.
         self.profiles = []
+        # The server's status roster, from the same call as the profiles. The
+        # colours below are the fallback, so the chips still offer the four
+        # statuses we know even when the API cannot be reached.
+        self.statuses = list(STATUS_COLORS)
         self.form_open = False
+        # The result on screen, kept so a status change can repaint the list
+        # without a second trip to MongoDB.
+        self.result = None
+        # A panel being worked in - a status menu open, or a change just landed
+        # and worth reading - does not time out under the pointer.
+        self.pinned = False
         self.hotkey_fields = {
             HOTKEY_FIELD_BASE + index: field for index, field in enumerate(CAPTURE_FIELDS)
         }
@@ -316,9 +329,10 @@ class Peek:
     def _say(self, message, color=MUTED):
         self.form_note.config(text=message, fg=color)
 
-    def set_profiles(self, profiles, error=None):
-        """Fill the picker from the server's roster."""
-        self.profiles = list(profiles or [])
+    def set_meta(self, meta, error=None):
+        """Fill the pickers from the server's rosters."""
+        self.statuses = list((meta or {}).get("statuses") or STATUS_COLORS)
+        self.profiles = list((meta or {}).get("profiles") or [])
         menu = self.profile_menu["menu"]
         menu.delete(0, "end")
         for name in self.profiles:
@@ -365,7 +379,11 @@ class Peek:
         self._chip(top, item.get("profileName", "?"), BG_ALT, TEXT).pack(side="left")
         status = item.get("status", "")
         bg, fg = STATUS_COLORS.get(status, (BG_ALT, MUTED))
-        self._chip(top, status, bg, fg).pack(side="right")
+        # The chip is also the control: click it to move the application on.
+        chip = self._chip(top, status or "no status", bg, fg)
+        chip.config(cursor="hand2")
+        chip.pack(side="right")
+        chip.bind("<Button-1>", lambda event, row=item: self._status_menu(event, row))
 
         tk.Label(
             row,
@@ -494,6 +512,8 @@ class Peek:
         self._cancel_auto_hide()
         self.request_id += 1
         self._set_form(False)
+        self.pinned = False
+        self.result = None
         self.panel.withdraw()
 
     def show_message(
@@ -518,8 +538,9 @@ class Peek:
             return names[0]
         return ""
 
-    def show_result(self, data):
+    def show_result(self, data, note=None, note_color=MUTED):
         self._clear()
+        self.result = data
         self.term_label.config(text=data["term"])
         total = data["total"]
         self.count_label.config(text=f"{total} application" + ("" if total == 1 else "s"))
@@ -538,16 +559,23 @@ class Peek:
             for item in data["items"]:
                 self._add_row(item)
 
-        foot = f"showing {data['shown']} of {total}" if data["shown"] < total else HOTKEY_LABEL
+        if data["shown"] < total:
+            foot = f"showing {data['shown']} of {total}"
+        elif data["items"]:
+            foot = STATUS_HINT
+        else:
+            foot = HOTKEY_LABEL
         spread = self._spread(data)
         if spread:
             foot += "   ·   " + spread
-        self.foot.config(text=foot)
+        # A change just made is worth more than the standing hint, so it holds
+        # the footer until the next render.
+        self.foot.config(text=note or foot, fg=note_color if note else MUTED)
 
         self.rows.update_idletasks()
         self.canvas.configure(height=min(self.rows.winfo_reqheight(), LIST_MAX_HEIGHT))
         self.canvas.yview_moveto(0)
-        self._show()
+        self._show(auto_hide=not self.pinned)
 
     def show_draft(self, saved=None, interactive=False):
         """Everything captured so far, in the order the hotkeys are numbered.
@@ -577,6 +605,89 @@ class Peek:
             self._show(auto_hide=False)
         else:
             self._show(delay=DRAFT_HIDE_MS)
+
+    # ---------- status editing ----------
+
+    def _status_menu(self, event, item):
+        """The status picker, dropped where the chip was clicked."""
+        if not item.get("id"):
+            return
+        # A menu is a modal grab, and the change that follows wants reading:
+        # neither can happen if the panel times out from under them.
+        self.pinned = True
+        self._cancel_auto_hide()
+
+        menu = tk.Menu(
+            self.panel,
+            tearoff=0,
+            bg=BG,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            bd=0,
+            font=(FONT, 9),
+        )
+        current = item.get("status", "")
+        for status in self.statuses:
+            menu.add_command(
+                # Where it is now is marked rather than left out, so the menu
+                # reads as the whole ladder with your rung on it.
+                label=("• " if status == current else "     ") + status,
+                command=lambda choice=status, row=item: self._change_status(row, choice),
+            )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _change_status(self, item, status):
+        """Picked from the menu: save it through the API, off the UI thread."""
+        if status == item.get("status"):
+            return
+        self.foot.config(text=f"Setting to {status}…", fg=MUTED)
+        threading.Thread(
+            target=self._post_status, args=(item["id"], status), daemon=True
+        ).start()
+
+    def _post_status(self, application_id, status):
+        try:
+            self.api.update_status(application_id, status)
+            self.events.put(("status", None, application_id, status))
+        except Exception as err:  # noqa: BLE001 - reported on the panel, never fatal
+            self.events.put(("statusfail", None, None, str(err)))
+
+    def _ordered(self, counts):
+        """Status counts in the roster's order, anything unknown after them."""
+        ordered = {status: counts[status] for status in self.statuses if status in counts}
+        ordered.update({key: value for key, value in counts.items() if key not in ordered})
+        return ordered
+
+    def _apply_status(self, application_id, status):
+        """Repaint the list with the saved status - no second query needed."""
+        data = self.result
+        item = next(
+            (row for row in (data or {}).get("items", []) if row.get("id") == application_id),
+            None,
+        )
+        if item is None:
+            # The panel moved on while the write was in flight; it landed all
+            # the same, and the next lookup will show it.
+            return
+        previous = item.get("status", "")
+        item["status"] = status
+
+        counts = data["byStatus"]
+        if counts.get(previous):
+            counts[previous] -= 1
+            if not counts[previous]:
+                del counts[previous]
+        counts[status] = counts.get(status, 0) + 1
+        data["byStatus"] = self._ordered(counts)
+
+        # The change is in: the panel goes back to being a result, which means it
+        # times out again - held open while the pointer is still on it.
+        self.pinned = False
+        self.show_result(data, note=f"{previous or 'no status'} → {status}", note_color=SUCCESS)
 
     # ---------- wiring ----------
 
@@ -623,6 +734,8 @@ class Peek:
         if kind == "term":
             self.anchor = anchor
             self.request_id += 1
+            # A fresh lookup is a fresh panel: it times out like any other.
+            self.pinned = False
             if not payload:
                 self.show_message(
                     "", f"No text selected. Highlight a company name, then press {HOTKEY_LABEL}."
@@ -657,9 +770,9 @@ class Peek:
             self.show_draft(interactive=True)
             if not self.profiles:
                 # The roster never arrived; the panel is open now, so try again.
-                threading.Thread(target=self._load_profiles, daemon=True).start()
+                threading.Thread(target=self._load_meta, daemon=True).start()
         elif kind == "meta":
-            self.set_profiles(payload, extra)
+            self.set_meta(payload, extra)
         elif kind == "added":
             self.add_button.config(state="normal")
             # Filed: the draft is spent, so the next job starts from empty.
@@ -671,6 +784,13 @@ class Peek:
         elif kind == "addfail":
             self.add_button.config(state="normal")
             self._say(extra, DANGER)
+        elif kind == "status":
+            self._apply_status(payload, extra)
+        elif kind == "statusfail":
+            # The status stays as it was drawn; the footer says why.
+            self.foot.config(text=extra, fg=DANGER)
+            self.pinned = True
+            self._cancel_auto_hide()
         elif kind == "error":
             self.anchor = anchor
             self.show_message("", extra, DANGER)
@@ -708,11 +828,11 @@ class Peek:
         except Exception as err:  # noqa: BLE001 - reported on the panel, never fatal
             self.events.put(("addfail", None, None, str(err)))
 
-    def _load_profiles(self):
+    def _load_meta(self):
         try:
-            self.events.put(("meta", None, self.api.meta().get("profiles", []), None))
+            self.events.put(("meta", None, self.api.meta(), None))
         except Exception as err:  # noqa: BLE001 - the panel says why the picker is empty
-            self.events.put(("meta", None, [], str(err)))
+            self.events.put(("meta", None, {}, str(err)))
 
     @staticmethod
     def _rejects(field, value):
@@ -766,10 +886,11 @@ class Peek:
                 print(f"[peek] {err}", file=sys.stderr)
 
         threading.Thread(target=listen, daemon=True).start()
-        threading.Thread(target=self._load_profiles, daemon=True).start()
+        threading.Thread(target=self._load_meta, daemon=True).start()
         self.root.after(60, self._pump)
         print(f"[peek] watching for {HOTKEY_LABEL}  (database: {self.lookup.db_name})")
         print("[peek] select a company name in any window, then press the hotkey.")
+        print("[peek] click a status chip in the panel to move that application on")
         for field in CAPTURE_FIELDS:
             print(f"[peek] {field[3]}  capture the selection as the {field[1].lower()}")
         print("[peek] Alt+0  show what has been captured, pick a profile, and add it")
