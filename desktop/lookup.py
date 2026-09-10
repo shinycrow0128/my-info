@@ -5,11 +5,11 @@ database the API writes to (collection `applications`, from the Mongoose model
 `Application`).
 """
 
-import os
 import re
-from pathlib import Path
 
 from pymongo import MongoClient
+
+from env import read_env
 
 DEFAULT_URI = "mongodb://127.0.0.1:27017/resume_tracker"
 STATUS_ORDER = ["applied", "interview", "offer", "rejected"]
@@ -17,19 +17,7 @@ STATUS_ORDER = ["applied", "interview", "offer", "rejected"]
 
 def read_uri():
     """MONGODB_URI wins, then server/.env, then the same default the server uses."""
-    if os.environ.get("MONGODB_URI"):
-        return os.environ["MONGODB_URI"]
-
-    env_file = Path(__file__).resolve().parent.parent / "server" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key.strip() == "MONGODB_URI":
-                return value.strip().strip('"').strip("'")
-    return DEFAULT_URI
+    return read_env("MONGODB_URI", DEFAULT_URI)
 
 
 class Lookup:

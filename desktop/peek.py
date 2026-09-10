@@ -8,7 +8,8 @@ The same panel doubles as a scratchpad for a job you are reading: select text an
 press Alt+1 to keep it as the job description, Alt+2 the job link, Alt+3 the job
 title, Alt+4 the company, Alt+5 the resume and Alt+6 the cover letter - those two
 picked out in File Explorer. Alt+0 shows what has been collected so far. A capture
-also leaves the selection on the clipboard, ready to paste.
+also leaves the selection on the clipboard, ready to paste. The Alt+0 panel
+carries a profile picker and an Add button, which files the draft through the API.
 
     python desktop/peek.py                 start listening for the hotkeys
     python desktop/peek.py --query Acme    one-off lookup printed to stdout
@@ -23,6 +24,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import traceback
 
+from api import Api
 from lookup import Lookup
 from win32 import (
     MOD_ALT,
@@ -67,6 +69,18 @@ CAPTURE_FIELDS = [
 # time so a wrong file is caught while it is still in front of you, not at
 # submission.
 DOCUMENT_EXTENSIONS = (".docx", ".doc", ".pdf")
+
+# What each captured field is called on the way to the API. The two documents are
+# not here: they ride as multipart file parts, already named as the server wants.
+API_FIELDS = {
+    "title": "jobTitle",
+    "link": "jobLink",
+    "description": "jobDescription",
+    "company": "company",
+}
+API_FILES = ("resume", "coverLetter")
+PROFILE_LOADING = "Loading profiles…"
+PROFILE_MISSING = "No profiles - is the server running?"
 FIELDS_BY_KEY = {field[0]: field for field in CAPTURE_FIELDS}
 DRAFT_HINT = "Alt+1-6 capture   ·   Alt+0 show"
 
@@ -88,6 +102,7 @@ TEXT = "#e7eaf0"
 MUTED = "#9aa3b2"
 DANGER = "#ff6b6b"
 ACCENT = "#93b2ff"
+SUCCESS = "#6fe0a4"
 
 # Same status colours as the web app, flattened onto the panel background
 # because Tk has no per-widget alpha.
@@ -158,6 +173,10 @@ class Peek:
         self._hide_delay = AUTO_HIDE_MS
         # Captured field values, held for the life of the process.
         self.draft = {}
+        self.api = Api()
+        # The server's roster, fetched rather than copied: config.js owns it.
+        self.profiles = []
+        self.form_open = False
         self.hotkey_fields = {
             HOTKEY_FIELD_BASE + index: field for index, field in enumerate(CAPTURE_FIELDS)
         }
@@ -165,6 +184,7 @@ class Peek:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("Company Peek")
+        self.profile_var = tk.StringVar(value=PROFILE_LOADING)
 
         # Measured, not guessed: the draft rows are cut to the pixel width they have.
         self.value_font = tkfont.Font(family=FONT, size=9)
@@ -217,11 +237,97 @@ class Peek:
         self.rows.bind("<Configure>", self._on_rows_resize)
         self.panel.bind("<MouseWheel>", self._on_wheel)
 
-        tk.Frame(self.body, bg=BORDER, height=1).pack(fill="x")
+        self.actions = tk.Frame(self.body, bg=BG_ALT)
+        self._build_form()
+
+        self.foot_rule = tk.Frame(self.body, bg=BORDER, height=1)
+        self.foot_rule.pack(fill="x")
         self.foot = tk.Label(
             self.body, text=HOTKEY_LABEL, bg=BG_ALT, fg=MUTED, font=(FONT, 8), anchor="w", padx=12, pady=5
         )
         self.foot.pack(fill="x")
+
+    def _build_form(self):
+        """The Alt+0 controls: which profile it goes out under, and Add.
+
+        Built once and kept, rather than rebuilt with the rows: the profile you
+        picked has to survive the next capture re-rendering the panel. It sits
+        below the scrolling canvas so Add cannot scroll out of reach.
+        """
+        top = tk.Frame(self.actions, bg=BG_ALT)
+        top.pack(fill="x", padx=12, pady=(8, 0))
+
+        self.profile_menu = tk.OptionMenu(top, self.profile_var, PROFILE_LOADING)
+        self.profile_menu.config(
+            bg=BG,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            anchor="w",
+            font=(FONT, 9),
+            width=1,  # the packer gives it the width; this stops it demanding more
+        )
+        self.profile_menu["menu"].config(
+            bg=BG, fg=TEXT, activebackground=BORDER, activeforeground=TEXT, bd=0, font=(FONT, 9)
+        )
+        self.profile_menu.pack(side="left", fill="x", expand=True)
+
+        self.add_button = tk.Button(
+            top,
+            text="Add application",
+            command=self._submit,
+            bg=ACCENT,
+            fg=BG,
+            activebackground=TEXT,
+            activeforeground=BG,
+            disabledforeground=MUTED,
+            font=(FONT, 9, "bold"),
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+        )
+        self.add_button.pack(side="right", padx=(8, 0))
+
+        self.form_note = tk.Label(
+            self.actions,
+            text="",
+            bg=BG_ALT,
+            fg=MUTED,
+            font=(FONT, 8),
+            anchor="w",
+            justify="left",
+            wraplength=PANEL_WIDTH - 26,
+        )
+        self.form_note.pack(fill="x", padx=12, pady=(4, 8))
+
+    def _set_form(self, on):
+        """Show or hide the Alt+0 controls."""
+        self.form_open = on
+        if on:
+            self.actions.pack(fill="x", before=self.foot_rule)
+        else:
+            self.actions.pack_forget()
+
+    def _say(self, message, color=MUTED):
+        self.form_note.config(text=message, fg=color)
+
+    def set_profiles(self, profiles, error=None):
+        """Fill the picker from the server's roster."""
+        self.profiles = list(profiles or [])
+        menu = self.profile_menu["menu"]
+        menu.delete(0, "end")
+        for name in self.profiles:
+            menu.add_command(label=name, command=lambda n=name: self.profile_var.set(n))
+
+        if self.profile_var.get() not in self.profiles:
+            self.profile_var.set(self.profiles[0] if self.profiles else PROFILE_MISSING)
+        if error and self.form_open:
+            self._say(error, DANGER)
 
     def _on_rows_resize(self, _event):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -233,6 +339,7 @@ class Peek:
         for widget in list(self.status_bar.winfo_children()) + list(self.rows.winfo_children()):
             widget.destroy()
         self.status_rule.pack_forget()
+        self._set_form(False)
 
     def _note(self, message, color=MUTED):
         tk.Label(
@@ -386,6 +493,7 @@ class Peek:
     def hide(self):
         self._cancel_auto_hide()
         self.request_id += 1
+        self._set_form(False)
         self.panel.withdraw()
 
     def show_message(
@@ -441,8 +549,12 @@ class Peek:
         self.canvas.yview_moveto(0)
         self._show()
 
-    def show_draft(self, saved=None):
-        """Everything captured so far, in the order the hotkeys are numbered."""
+    def show_draft(self, saved=None, interactive=False):
+        """Everything captured so far, in the order the hotkeys are numbered.
+
+        `interactive` is the Alt+0 view: the profile picker and Add, and no
+        auto-hide - a panel that vanishes under the pointer cannot be filled in.
+        """
         self._clear()
         self.term_label.config(text="Job draft")
         filled = sum(1 for field in CAPTURE_FIELDS if self.draft.get(field[0]))
@@ -452,12 +564,19 @@ class Peek:
             self._add_field(field, highlight=field[0] == saved)
 
         self.foot.config(text=DRAFT_HINT)
+        self._set_form(interactive)
         self.rows.update_idletasks()
-        # No cap and so no scrolling: a handful of one-line fields is a fixed height,
-        # and a list you have to scroll is unreadable behind a one-second timer.
-        self.canvas.configure(height=self.rows.winfo_reqheight())
+        # The flash view is a fixed height - six one-line fields, nothing to scroll.
+        # The form is taller than the screen has patience for, so past the cap the
+        # fields scroll and Add stays put underneath them.
+        height = self.rows.winfo_reqheight()
+        self.canvas.configure(height=min(height, LIST_MAX_HEIGHT) if interactive else height)
         self.canvas.yview_moveto(0)
-        self._show(delay=DRAFT_HIDE_MS)
+        if interactive:
+            # No countdown: the form waits for a click, however long that takes.
+            self._show(auto_hide=False)
+        else:
+            self._show(delay=DRAFT_HIDE_MS)
 
     # ---------- wiring ----------
 
@@ -521,15 +640,37 @@ class Peek:
             self.request_id += 1
             field = FIELDS_BY_KEY[payload]
             problem = self._rejects(field, extra)
-            if problem:
+            if problem and self.form_open:
+                # The form is mid-fill: say what went wrong without closing it.
+                self.show_draft(interactive=True)
+                self._say(problem, DANGER)
+            elif problem:
                 self.show_message("", problem, foot=DRAFT_HINT, delay=DRAFT_HIDE_MS)
             else:
                 self.draft[payload] = extra
-                self.show_draft(saved=payload)
+                # Capturing while the form is up leaves it up, so a run of
+                # Alt+1-6 fills the panel in front of you.
+                self.show_draft(saved=payload, interactive=self.form_open)
         elif kind == "draft":
             self.anchor = anchor
             self.request_id += 1
-            self.show_draft()
+            self.show_draft(interactive=True)
+            if not self.profiles:
+                # The roster never arrived; the panel is open now, so try again.
+                threading.Thread(target=self._load_profiles, daemon=True).start()
+        elif kind == "meta":
+            self.set_profiles(payload, extra)
+        elif kind == "added":
+            self.add_button.config(state="normal")
+            # Filed: the draft is spent, so the next job starts from empty.
+            self.draft.clear()
+            self.show_draft(interactive=True)
+            title = payload.get("jobTitle", "The application")
+            company = payload.get("company")
+            self._say(f"Added {title}{' at ' + company if company else ''}.", SUCCESS)
+        elif kind == "addfail":
+            self.add_button.config(state="normal")
+            self._say(extra, DANGER)
         elif kind == "error":
             self.anchor = anchor
             self.show_message("", extra, DANGER)
@@ -538,6 +679,40 @@ class Peek:
             self.show_result(extra)
         elif kind == "failed" and payload == self.request_id:
             self.show_message(self.term_label.cget("text"), extra, DANGER)
+
+    def _submit(self):
+        """Add clicked: check what the API requires, then post on a worker thread."""
+        profile = self.profile_var.get()
+        if profile not in self.profiles:
+            self._say("No profile picked - the roster has not loaded.", DANGER)
+            return
+        if not self.draft.get("title"):
+            self._say("A job title is required. Select one and press Alt+3.", DANGER)
+            return
+
+        self.add_button.config(state="disabled")
+        self._say("Adding…")
+        # A copy: the draft can be captured into while the request is in flight.
+        threading.Thread(
+            target=self._post, args=(profile, dict(self.draft)), daemon=True
+        ).start()
+
+    def _post(self, profile, draft):
+        fields = {"profileName": profile}
+        for key, name in API_FIELDS.items():
+            if draft.get(key):
+                fields[name] = draft[key]
+        files = {key: draft[key] for key in API_FILES if draft.get(key)}
+        try:
+            self.events.put(("added", None, self.api.create_application(fields, files), None))
+        except Exception as err:  # noqa: BLE001 - reported on the panel, never fatal
+            self.events.put(("addfail", None, None, str(err)))
+
+    def _load_profiles(self):
+        try:
+            self.events.put(("meta", None, self.api.meta().get("profiles", []), None))
+        except Exception as err:  # noqa: BLE001 - the panel says why the picker is empty
+            self.events.put(("meta", None, [], str(err)))
 
     @staticmethod
     def _rejects(field, value):
@@ -591,12 +766,13 @@ class Peek:
                 print(f"[peek] {err}", file=sys.stderr)
 
         threading.Thread(target=listen, daemon=True).start()
+        threading.Thread(target=self._load_profiles, daemon=True).start()
         self.root.after(60, self._pump)
         print(f"[peek] watching for {HOTKEY_LABEL}  (database: {self.lookup.db_name})")
         print("[peek] select a company name in any window, then press the hotkey.")
         for field in CAPTURE_FIELDS:
             print(f"[peek] {field[3]}  capture the selection as the {field[1].lower()}")
-        print("[peek] Alt+0  show what has been captured")
+        print("[peek] Alt+0  show what has been captured, pick a profile, and add it")
         print("[peek] Ctrl+C here to quit.")
         try:
             self.root.mainloop()
